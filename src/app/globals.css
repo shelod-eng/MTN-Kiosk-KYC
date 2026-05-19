@@ -1,0 +1,46 @@
+@import "tailwindcss";
+@import "bpmn-js/dist/assets/diagram-js.css";
+@import "bpmn-js/dist/assets/bpmn-font/css/bpmn.css";
+
+:root {
+  --background: #04070c;
+  --foreground: #f4f8fb;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: "Segoe UI", "Trebuchet MS", "Aptos", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "Cascadia Mono", "Consolas", "Courier New", ui-monospace, monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  background: var(--background);
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: "Segoe UI", "Trebuchet MS", "Aptos", ui-sans-serif, system-ui, sans-serif;
+}
+
+a,
+button,
+input,
+select {
+  transition: all 160ms ease;
+}
+
+.bpmn-canvas .djs-container,
+.bpmn-canvas .djs-container svg {
+  width: 100%;
+  height: 100%;
+}
+
+.bpmn-canvas .djs-palette {
+  border-right: 1px solid #d7e2ee;
+}
