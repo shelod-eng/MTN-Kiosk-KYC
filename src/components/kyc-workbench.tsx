@@ -13,6 +13,7 @@ import {
   type KycCase,
   type VerificationSignalSet,
 } from "@/lib/mock-data";
+import { validateSouthAfricanIdNumber } from "@/lib/sa-id";
 
 type View = "dashboard" | "kiosk" | "whatsapp" | "review" | "workflow";
 
@@ -21,7 +22,6 @@ type PersonalDetails = {
   lastName: string;
   idNumber: string;
   phoneNumber: string;
-  email: string;
   consent: boolean;
 };
 
@@ -78,14 +78,13 @@ const emptyUploads: UploadState = {
 };
 
 export function KycWorkbench() {
-  const [view, setView] = useState<View>("kiosk");
+  const [view, setView] = useState<View>("whatsapp");
   const [step, setStep] = useState(0);
   const [details, setDetails] = useState<PersonalDetails>({
     firstName: "Lebo",
     lastName: "Mpeta",
     idNumber: "9201055800087",
     phoneNumber: "+27 78 592 9455",
-    email: "lebo@pondo-pay.online",
     consent: true,
   });
   const [uploads, setUploads] = useState<UploadState>({
@@ -101,7 +100,7 @@ export function KycWorkbench() {
   const [completedRecord, setCompletedRecord] = useState<KycRecord | null>(null);
 
   const [chatMessages, setChatMessages] = useState<Array<{ sender: "bot" | "client"; text: string }>>([
-    { sender: "bot", text: 'Welcome to Kiosk - KYC on WhatsApp. Reply "START KYC" to begin.' },
+    { sender: "bot", text: 'Welcome to KYC-Now on WhatsApp. Reply "START KYC" to begin.' },
   ]);
   const [whatsAppStage, setWhatsAppStage] = useState(0);
   const [whatsAppUploads, setWhatsAppUploads] = useState<UploadState>({ ...emptyUploads });
@@ -114,6 +113,7 @@ export function KycWorkbench() {
   const [whatsAppIdOcr, setWhatsAppIdOcr] = useState<OcrSummary | null>(null);
   const [whatsAppPoaOcr, setWhatsAppPoaOcr] = useState<OcrSummary | null>(null);
   const [whatsAppOcrBusy, setWhatsAppOcrBusy] = useState<"id" | "poa" | null>(null);
+  const idValidation = useMemo(() => validateSouthAfricanIdNumber(details.idNumber), [details.idNumber]);
 
   useEffect(() => {
     if (!isRunningVerification) return;
@@ -328,8 +328,11 @@ export function KycWorkbench() {
             <section className="rounded-[2rem] border border-[#d7e2ee] bg-white p-6 shadow-sm">
               <div className="flex items-start justify-between gap-4">
                 <div>
-                  <p className="text-xs font-semibold uppercase tracking-[0.2em] text-[#7b8ea6]">WhatsApp demo</p>
-                  <h2 className="mt-2 text-2xl font-semibold">Client-guided KYC conversation</h2>
+                  <p className="text-xs font-semibold uppercase tracking-[0.2em] text-[#7b8ea6]">WhatsApp KYC-Now</p>
+                  <h2 className="mt-2 text-2xl font-semibold">Client-guided identity and trust flow</h2>
+                  <p className="mt-2 text-sm leading-6 text-[#698198]">
+                    Staff initiates the case, the customer consents on WhatsApp, then secure web verification handles selfie, location, affidavit fallback, and OTP before final scoring.
+                  </p>
                 </div>
                 <button
                   type="button"
@@ -394,10 +397,31 @@ export function KycWorkbench() {
                   <MiniField label="ID number" value={details.idNumber || "Not captured"} />
                   <MiniField label="Phone" value={details.phoneNumber || "Not captured"} />
                   <MiniField label="Consent" value={details.consent ? "AGREE received" : "Pending"} />
+                  <MiniField label="ID validation" value={idValidation.isValid ? "Valid SA ID" : "Needs correction"} />
                   <MiniField label="ID document" value={whatsAppUploads.idDocument ?? "Not uploaded"} />
                   <MiniField label="Selfie" value={whatsAppUploads.selfie ?? "Not uploaded"} />
                   <MiniField label="Proof of address" value={whatsAppUploads.proofOfAddress ?? "Not uploaded"} />
                 </div>
+              </StatusCard>
+
+              <StatusCard title="Trust stack">
+                <div className="grid gap-3 md:grid-cols-2">
+                  {[
+                    "Names",
+                    "SA ID number",
+                    "Liveness and face match",
+                    "Proof of address or affidavit",
+                    "OTP verification",
+                    "Location and timestamp",
+                  ].map((item) => (
+                    <div key={item} className="rounded-2xl border border-[#dfe8f0] bg-[#f8fbfe] px-4 py-3 text-sm font-medium text-[#27445e]">
+                      {item}
+                    </div>
+                  ))}
+                </div>
+                <p className="mt-4 text-sm leading-6 text-[#667d93]">
+                  Low risk cases auto-approve, medium risk routes to manual review, and high risk rejects or escalates.
+                </p>
               </StatusCard>
 
               <StatusCard title="WhatsApp uploads">
@@ -422,7 +446,7 @@ export function KycWorkbench() {
 
                   <WhatsAppUploadCard
                     title="Proof of address upload"
-                    subtitle="Upload the utility bill or bank statement shared by the client."
+                    subtitle="Upload proof of address, or use the secure affidavit fallback when no bill is available."
                     fileName={whatsAppUploads.proofOfAddress}
                     preview={whatsAppPoaPreview}
                     actionLabel="Upload proof of address"
@@ -446,6 +470,12 @@ export function KycWorkbench() {
                 ) : (
                   <p className="text-sm leading-6 text-[#64788f]">Complete the guided messages to receive the final KYC result.</p>
                 )}
+              </StatusCard>
+
+              <StatusCard title="Secure web session">
+                <p className="text-sm leading-6 text-[#64788f]">
+                  The prototype now includes a dedicated secure session route at `/verify/[token]` for selfie capture, device intelligence, GPS capture, and affidavit fallback.
+                </p>
               </StatusCard>
 
               <StatusCard title="Verification path">
@@ -525,7 +555,7 @@ export function KycWorkbench() {
       setChatMessages((current) => [
         ...current,
         { sender: "client", text: prompt },
-        { sender: "bot", text: "POPIA notice: reply AGREE to continue with identity verification." },
+        { sender: "bot", text: "POPIA notice: reply AGREE to continue with KYC-Now identity verification." },
       ]);
       setWhatsAppStage(1);
       return;
@@ -536,7 +566,7 @@ export function KycWorkbench() {
       setChatMessages((current) => [
         ...current,
         { sender: "client", text: prompt },
-        { sender: "bot", text: "Consent captured. Please submit full name, SA ID number, phone, and email." },
+        { sender: "bot", text: "Consent captured. Please submit full name, SA ID number, and mobile number." },
       ]);
       setWhatsAppStage(2);
       return;
@@ -547,7 +577,7 @@ export function KycWorkbench() {
         ...current,
         {
           sender: "bot",
-          text: `Captured ${details.firstName} ${details.lastName}, ${details.idNumber}. Please upload your ID document next.`,
+          text: `Captured ${details.firstName} ${details.lastName}, ${details.idNumber}. Please upload the client's ID document next.`,
         },
       ]);
       setWhatsAppStage(3);
@@ -558,7 +588,7 @@ export function KycWorkbench() {
     if (prompt === "UPLOAD ID") {
       setChatMessages((current) => [
         ...current,
-        { sender: "bot", text: "Please attach the client's ID document below. OCR will extract the identity fields once uploaded." },
+        { sender: "bot", text: "Please attach the client's ID document below. OCR will extract identity fields before the secure selfie session." },
       ]);
       setWhatsAppExpectedUpload("id");
       return;
@@ -567,7 +597,7 @@ export function KycWorkbench() {
     if (prompt === "UPLOAD SELFIE") {
       setChatMessages((current) => [
         ...current,
-        { sender: "bot", text: "Open the camera below and capture a selfie for liveness and face match." },
+        { sender: "bot", text: "Open the secure camera session below and capture a selfie for liveness and face match." },
       ]);
       setWhatsAppExpectedUpload("selfie");
       return;
@@ -576,7 +606,7 @@ export function KycWorkbench() {
     if (prompt === "UPLOAD POA") {
       setChatMessages((current) => [
         ...current,
-        { sender: "bot", text: "Upload the proof of address below. OCR will validate the address fields and document recency." },
+        { sender: "bot", text: "Upload proof of address below, or use the affidavit fallback if the client does not have a bill available." },
       ]);
       setWhatsAppExpectedUpload("poa");
     }
@@ -596,7 +626,7 @@ export function KycWorkbench() {
       setChatMessages((current) => [
         ...current,
         { sender: "client", text: `[Uploaded ID] ${file.name}` },
-        { sender: "bot", text: `ID received. OCR extracted the holder details with ${summary.confidence}% confidence. Please upload a selfie next.` },
+        { sender: "bot", text: `ID received. OCR extracted the holder details with ${summary.confidence}% confidence. Please continue to secure selfie capture next.` },
       ]);
       setWhatsAppExpectedUpload(null);
       setWhatsAppStage(4);
@@ -613,7 +643,7 @@ export function KycWorkbench() {
     setChatMessages((current) => [
       ...current,
       { sender: "client", text: `[Uploaded Proof of Address] ${file.name}` },
-      { sender: "bot", text: `Proof of address received. OCR validated the address fields with ${summary.confidence}% confidence. Submitting the case now.` },
+      { sender: "bot", text: `Proof of address received. OCR validated the address fields with ${summary.confidence}% confidence. OTP, location, and risk scoring are now ready.` },
     ]);
     setWhatsAppExpectedUpload(null);
     setWhatsAppStage(6);
@@ -626,7 +656,7 @@ export function KycWorkbench() {
     setChatMessages((current) => [
       ...current,
       { sender: "client", text: "[Captured Selfie] whatsapp-selfie-capture.jpg" },
-      { sender: "bot", text: "Selfie received. Liveness capture complete. Please upload proof of address next." },
+      { sender: "bot", text: "Selfie received. Liveness capture complete. Please upload proof of address next, or continue with the affidavit fallback." },
     ]);
     setWhatsAppExpectedUpload(null);
     setWhatsAppStage(5);
@@ -704,7 +734,7 @@ function PersonalDetailsStep({
     <div>
       <div className="rounded-t-[1.75rem] bg-[linear-gradient(135deg,#edf9f1,#f4f9ff)] px-6 py-6">
         <h2 className="text-3xl font-semibold text-[#112a43]">Personal Details</h2>
-        <p className="mt-2 text-lg text-[#7c90a5]">Enter your personal information as it appears on your ID document.</p>
+        <p className="mt-2 text-lg text-[#7c90a5]">Capture only the minimum details required for the WhatsApp KYC-Now flow.</p>
       </div>
       <div className="space-y-6 px-6 py-8">
         <div className="grid gap-5 md:grid-cols-2">
@@ -712,10 +742,7 @@ function PersonalDetailsStep({
           <Field label="Last Name" value={details.lastName} placeholder="e.g. Mpeta" onChange={(value) => onChange((current) => ({ ...current, lastName: value }))} />
         </div>
         <Field label="SA ID Number" value={details.idNumber} placeholder="13-digit ID number" onChange={(value) => onChange((current) => ({ ...current, idNumber: value }))} />
-        <div className="grid gap-5 md:grid-cols-2">
-          <Field label="Phone Number" value={details.phoneNumber} placeholder="+27 8X XXX XXXX" onChange={(value) => onChange((current) => ({ ...current, phoneNumber: value }))} />
-          <Field label="Email Address" value={details.email} placeholder="you@example.com" onChange={(value) => onChange((current) => ({ ...current, email: value }))} />
-        </div>
+        <Field label="Phone Number" value={details.phoneNumber} placeholder="+27 8X XXX XXXX" onChange={(value) => onChange((current) => ({ ...current, phoneNumber: value }))} />
         <label className="flex items-start gap-3 rounded-3xl border border-[#d6e4f2] bg-[#edf5ff] p-4">
           <input
             checked={details.consent}
@@ -1203,7 +1230,6 @@ function canAdvance(
         details.lastName.trim() &&
         /^\d{13}$/.test(details.idNumber.replace(/\D/g, "")) &&
         details.phoneNumber.trim() &&
-        details.email.trim() &&
         details.consent
     );
   }
@@ -1282,7 +1308,7 @@ function resetWhatsAppDemo(
   setWhatsAppIdOcr(null);
   setWhatsAppPoaOcr(null);
   setWhatsAppOcrBusy(null);
-  setChatMessages([{ sender: "bot", text: 'Welcome to Kiosk - KYC on WhatsApp. Reply "START KYC" to begin.' }]);
+  setChatMessages([{ sender: "bot", text: 'Welcome to KYC-Now on WhatsApp. Reply "START KYC" to begin.' }]);
 }
 
 async function mockOcrExtraction(kind: "id" | "poa", fileName: string, details: PersonalDetails) {
