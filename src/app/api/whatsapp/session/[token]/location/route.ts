@@ -33,6 +33,7 @@ export async function POST(request: NextRequest, context: RouteContext) {
 
   return NextResponse.json({
     caseId: updatedCase?.id,
+    case: updatedCase,
     what3words,
     location: updatedCase?.geoCapture,
   });

@@ -204,8 +204,10 @@ export async function updateCaseStatus(caseId: string, status: WhatsAppKycCase["
 export async function captureLocation(caseId: string, payload: GeoCapture) {
   const current = await loadCase(caseId);
   if (!current) return null;
+  const hasAddressEvidence = Boolean(current.verification.proofOfAddressProvided || current.verification.digitalAffidavitProvided);
   const nextCase = {
     ...current,
+    status: current.status === "location_pending" || (current.status === "address_pending" && hasAddressEvidence) ? "risk_review" : current.status,
     geoCapture: payload,
     verification: {
       ...current.verification,
@@ -219,8 +221,15 @@ export async function captureLocation(caseId: string, payload: GeoCapture) {
 export async function captureAffidavit(caseId: string, payload: AffidavitCapture) {
   const current = await loadCase(caseId);
   if (!current) return null;
+  const nextStatus =
+    current.status === "address_pending"
+      ? current.verification.locationShared
+        ? "risk_review"
+        : "location_pending"
+      : current.status;
   const nextCase = {
     ...current,
+    status: nextStatus,
     affidavit: payload,
     verification: {
       ...current.verification,
@@ -235,12 +244,61 @@ export async function captureAffidavit(caseId: string, payload: AffidavitCapture
   return persistCase(nextCase);
 }
 
+export async function captureIdDocument(caseId: string, payload: { documentUrl: string; documentType: string; ocrConfidence?: number }) {
+  const current = await loadCase(caseId);
+  if (!current) return null;
+  const nextCase = {
+    ...current,
+    documentUrls: {
+      ...current.documentUrls,
+      idDocument: payload.documentUrl,
+    },
+    updatedAt: new Date().toISOString(),
+  };
+  return persistCase(nextCase);
+}
+
+export async function captureProofOfAddress(caseId: string, payload: { proofOfAddressUrl: string; fileName?: string }) {
+  const current = await loadCase(caseId);
+  if (!current) return null;
+  const nextStatus =
+    current.status === "address_pending"
+      ? current.verification.locationShared
+        ? "risk_review"
+        : "location_pending"
+      : current.status;
+  const nextCase = {
+    ...current,
+    status: nextStatus,
+    verification: {
+      ...current.verification,
+      proofOfAddressProvided: true,
+    },
+    documentUrls: {
+      ...current.documentUrls,
+      proofOfAddress: payload.proofOfAddressUrl,
+    },
+    updatedAt: new Date().toISOString(),
+  };
+  return persistCase(nextCase);
+}
+
 export async function upsertOtp(caseId: string, mode: "send" | "verify", attempts = 1) {
   const current = await loadCase(caseId);
   if (!current) return null;
   const now = new Date();
+  const hasAddressEvidence = Boolean(current.verification.proofOfAddressProvided || current.verification.digitalAffidavitProvided);
+  const nextStatus =
+    mode === "verify"
+      ? hasAddressEvidence
+        ? current.verification.locationShared
+          ? "risk_review"
+          : "location_pending"
+        : "address_pending"
+      : current.status;
   const nextCase = {
     ...current,
+    status: nextStatus,
     verification: {
       ...current.verification,
       otp:

@@ -167,7 +167,7 @@ const validTransitions: Partial<Record<WhatsAppCaseStatus, WhatsAppCaseStatus[]>
   details_pending: ["selfie_pending"],
   selfie_pending: ["otp_pending"],
   otp_pending: ["address_pending"],
-  address_pending: ["location_pending"],
+  address_pending: ["location_pending", "risk_review"],
   location_pending: ["risk_review"],
   risk_review: ["approved", "manual_review", "rejected"],
   manual_review: ["approved", "rejected", "verified"],

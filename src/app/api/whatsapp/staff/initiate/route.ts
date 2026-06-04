@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createCase, createCaseSession } from "@/lib/whatsapp-store";
+import { createCase, createCaseSession, getCase } from "@/lib/whatsapp-store";
 import { requirePermission } from "@/lib/staff-auth";
 
 export async function POST(request: NextRequest) {
@@ -29,9 +29,10 @@ export async function POST(request: NextRequest) {
     notes: body.notes,
   });
   const session = await createCaseSession(kycCase.id);
+  const sessionReadyCase = (await getCase(kycCase.id)) ?? kycCase;
 
   return NextResponse.json({
-    case: kycCase,
+    case: sessionReadyCase,
     secureSession: session,
     initiatedBy: auth.context,
     messageTemplate:

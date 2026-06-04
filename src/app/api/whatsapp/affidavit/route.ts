@@ -29,6 +29,7 @@ export async function POST(request: NextRequest) {
   }
 
   return NextResponse.json({
+    case: updatedCase,
     affidavit: updatedCase.affidavit,
     status: updatedCase.status,
   });

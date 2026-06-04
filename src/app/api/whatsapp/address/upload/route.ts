@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { updateFromWebhook } from "@/lib/whatsapp-store";
+import { captureProofOfAddress } from "@/lib/whatsapp-store";
 
 export async function POST(request: NextRequest) {
   const body = (await request.json()) as { caseId?: string; proofOfAddressUrl?: string; fileName?: string };
@@ -7,14 +7,9 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Missing caseId or proofOfAddressUrl." }, { status: 400 });
   }
 
-  const updatedCase = await updateFromWebhook({
-    caseId: body.caseId,
-    event: "address_submitted",
-    actorId: "secure-session",
-    details: {
-      proofOfAddressUrl: body.proofOfAddressUrl,
-      fileName: body.fileName ?? "proof-of-address.pdf",
-    },
+  const updatedCase = await captureProofOfAddress(body.caseId, {
+    proofOfAddressUrl: body.proofOfAddressUrl,
+    fileName: body.fileName ?? "proof-of-address.pdf",
   });
 
   if (!updatedCase) {
@@ -22,6 +17,7 @@ export async function POST(request: NextRequest) {
   }
 
   return NextResponse.json({
+    case: updatedCase,
     caseId: updatedCase.id,
     status: updatedCase.status,
     proofOfAddressUrl: updatedCase.documentUrls.proofOfAddress,

@@ -11,13 +11,16 @@ const staffHeaders = {
   "x-staff-role": "supervisor",
 };
 
-type InitiationForm = {
-  tenant: "MTN" | "Vodacom" | "Cell C";
-  customerPhoneNumber: string;
-  deliveryMethod: "whatsapp" | "qr";
-};
+type NetworkProvider = "MTN" | "Vodacom" | "Cell C";
+type RouteMode = "single" | "bulk";
 
 type CustomerDetails = {
+  fullName: string;
+  idNumber: string;
+  phoneNumber: string;
+};
+
+type CampaignRecipient = {
   fullName: string;
   idNumber: string;
   phoneNumber: string;
@@ -30,21 +33,20 @@ type RuntimeStatus = {
 };
 
 export function StoreJourneySimulator() {
-  const [form, setForm] = useState<InitiationForm>({
-    tenant: "MTN",
-    customerPhoneNumber: "+27785929455",
-    deliveryMethod: "whatsapp",
-  });
+  const [routeMode, setRouteMode] = useState<RouteMode>("single");
+  const [provider, setProvider] = useState<NetworkProvider>("MTN");
   const [customer, setCustomer] = useState<CustomerDetails>({
     fullName: "Lebo Mpeta",
     idNumber: "9201055800087",
     phoneNumber: "+27785929455",
   });
+  const [campaignCsv, setCampaignCsv] = useState("fullName,idNumber,phoneNumber\nNomsa Dlamini,8801015800082,+27821234567\nThabo Molefe,9002025800088,+27731234567");
   const [caseItem, setCaseItem] = useState<WhatsAppKycCase | null>(null);
+  const [campaignCases, setCampaignCases] = useState<WhatsAppKycCase[]>([]);
   const [runtime, setRuntime] = useState<RuntimeStatus | null>(null);
   const [busyKey, setBusyKey] = useState<string | null>(null);
-  const [timeline, setTimeline] = useState<string[]>([
-    "Store agent is ready to start a KYC-Now case for a walk-in customer.",
+  const [messages, setMessages] = useState<Array<{ sender: "platform" | "customer"; text: string }>>([
+    { sender: "platform", text: "Store agent selects a network and sends a WhatsApp KYC message to the customer." },
   ]);
 
   useEffect(() => {
@@ -54,18 +56,7 @@ export function StoreJourneySimulator() {
   }, []);
 
   const secureSessionLink = caseItem?.secureSessionToken ? `/verify/${caseItem.secureSessionToken}` : null;
-  const trustSummary = useMemo(() => {
-    if (!caseItem?.risk) return [];
-    return caseItem.risk.layers.map((layer) => `${layer.label}: ${layer.status} (${layer.score})`);
-  }, [caseItem]);
-
-  async function refreshCase(caseId: string) {
-    const response = await fetch(`/api/whatsapp/cases/${caseId}`, {
-      headers: staffHeaders,
-    });
-    const payload = (await response.json()) as { case?: WhatsAppKycCase };
-    if (payload.case) setCaseItem(payload.case);
-  }
+  const nextStep = useMemo(() => getNextStep(caseItem), [caseItem]);
 
   async function runStep(key: string, task: () => Promise<void>) {
     setBusyKey(key);
@@ -76,25 +67,37 @@ export function StoreJourneySimulator() {
     }
   }
 
-  async function initiateCase() {
-    await runStep("initiate", async () => {
+  async function refreshCase(caseId = caseItem?.id) {
+    if (!caseId) return;
+    const response = await fetch(`/api/whatsapp/cases/${caseId}`, { headers: staffHeaders });
+    const payload = (await response.json()) as { case?: WhatsAppKycCase };
+    if (payload.case) setCaseItem(payload.case);
+  }
+
+  async function sendWalkInInvite() {
+    await runStep("invite", async () => {
       const response = await fetch("/api/whatsapp/staff/initiate", {
         method: "POST",
         headers: staffHeaders,
-        body: JSON.stringify(form),
+        body: JSON.stringify({
+          tenant: provider,
+          customerPhoneNumber: customer.phoneNumber,
+          deliveryMethod: "whatsapp",
+          notes: "Single walk-in KYC initiated at store kiosk",
+        }),
       });
       const payload = (await response.json()) as { case?: WhatsAppKycCase; error?: string };
-      if (payload.case) {
-        setCaseItem(payload.case);
-        setTimeline((current) => [
-          ...current,
-          `Store staff initiated ${payload.case.reference} for ${form.tenant} and sent a ${form.deliveryMethod === "qr" ? "QR handoff" : "WhatsApp message"}.`,
-        ]);
-      }
+      if (!payload.case) return;
+
+      setCaseItem(payload.case);
+      setMessages([
+        { sender: "platform", text: `${provider} staff sent a WhatsApp KYC message to ${customer.phoneNumber}.` },
+        { sender: "platform", text: 'Welcome to KYC-Now. Reply "START KYC" to begin your FICA/RICA registration.' },
+      ]);
     });
   }
 
-  async function sendConsent() {
+  async function acceptConsent() {
     if (!caseItem) return;
     await runStep("consent", async () => {
       await fetch("/api/whatsapp/webhook", {
@@ -103,7 +106,12 @@ export function StoreJourneySimulator() {
         body: JSON.stringify({ caseId: caseItem.id, event: "consent_received" }),
       });
       await refreshCase(caseItem.id);
-      setTimeline((current) => [...current, "Customer accepted the POPIA notice inside WhatsApp."]);
+      setMessages((current) => [
+        ...current,
+        { sender: "customer", text: "START KYC" },
+        { sender: "customer", text: "AGREE" },
+        { sender: "platform", text: "Consent captured. Please submit your full name, SA ID number, and mobile number." },
+      ]);
     });
   }
 
@@ -116,55 +124,15 @@ export function StoreJourneySimulator() {
         body: JSON.stringify({
           caseId: caseItem.id,
           event: "details_submitted",
-          details: {
-            fullName: customer.fullName,
-            idNumber: customer.idNumber,
-            phoneNumber: customer.phoneNumber,
-          },
+          details: customer,
         }),
       });
       await refreshCase(caseItem.id);
-      setTimeline((current) => [...current, "Customer submitted full name, SA ID number, and mobile number."]);
-    });
-  }
-
-  async function captureDevice() {
-    if (!caseItem?.secureSessionToken) return;
-    await runStep("device", async () => {
-      await fetch(`/api/whatsapp/session/${caseItem.secureSessionToken}/device`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          browserFingerprint: "store-tablet-chrome-1080x1920-africa-johannesburg",
-          operatingSystem: "Android 14",
-          browser: "Chrome Mobile",
-          screenSize: "1080x1920",
-          timezone: "Africa/Johannesburg",
-          language: "en-ZA",
-          touchCapable: true,
-          sessionContinuity: true,
-          cookiesEnabled: true,
-        }),
-      });
-      await refreshCase(caseItem.id);
-      setTimeline((current) => [...current, "Secure session captured device intelligence from the customer's handset or store tablet."]);
-    });
-  }
-
-  async function runBiometrics() {
-    if (!caseItem) return;
-    await runStep("biometric", async () => {
-      await fetch("/api/whatsapp/biometrics/analyze", {
-        method: "POST",
-        headers: staffHeaders,
-        body: JSON.stringify({
-          caseId: caseItem.id,
-          selfieUrl: "customer-selfie.jpg",
-          idDocumentUrl: "customer-id-front.jpg",
-        }),
-      });
-      await refreshCase(caseItem.id);
-      setTimeline((current) => [...current, "Customer completed selfie, liveness detection, and face match against the ID document."]);
+      setMessages((current) => [
+        ...current,
+        { sender: "customer", text: `${customer.fullName}, ${customer.idNumber}, ${customer.phoneNumber}` },
+        { sender: "platform", text: "Details captured. Open the secure link to complete selfie, liveness, device, and location checks." },
+      ]);
     });
   }
 
@@ -177,7 +145,7 @@ export function StoreJourneySimulator() {
         body: JSON.stringify({ caseId: caseItem.id }),
       });
       await refreshCase(caseItem.id);
-      setTimeline((current) => [...current, "System sent the OTP to the customer's mobile number."]);
+      setMessages((current) => [...current, { sender: "platform", text: "OTP sent on WhatsApp/SMS. Demo code is 123456." }]);
     });
   }
 
@@ -190,54 +158,45 @@ export function StoreJourneySimulator() {
         body: JSON.stringify({ caseId: caseItem.id, code: "123456" }),
       });
       await refreshCase(caseItem.id);
-      setTimeline((current) => [...current, "Customer entered the OTP and passed mobile verification."]);
+      setMessages((current) => [...current, { sender: "customer", text: "123456" }, { sender: "platform", text: "OTP verified. Please provide proof of address or complete the affidavit fallback." }]);
     });
   }
 
-  async function uploadProofOfAddress() {
+  async function submitAddress(useAffidavit: boolean) {
     if (!caseItem) return;
-    await runStep("poa", async () => {
-      await fetch("/api/whatsapp/address/upload", {
-        method: "POST",
-        headers: staffHeaders,
-        body: JSON.stringify({
-          caseId: caseItem.id,
-          proofOfAddressUrl: "utility-bill-may-2026.pdf",
-          fileName: "utility-bill-may-2026.pdf",
-        }),
-      });
+    await runStep(useAffidavit ? "affidavit" : "poa", async () => {
+      if (useAffidavit) {
+        await fetch("/api/whatsapp/affidavit", {
+          method: "POST",
+          headers: staffHeaders,
+          body: JSON.stringify({
+            caseId: caseItem.id,
+            name: customer.fullName,
+            address: "15 Rivonia Road, Sandton",
+            declarationAccepted: true,
+            responses: [
+              { question: "Do you confirm this is your home address?", answer: "Yes" },
+              { question: "Do you have a utility bill?", answer: "No" },
+            ],
+          }),
+        });
+      } else {
+        await fetch("/api/whatsapp/address/upload", {
+          method: "POST",
+          headers: staffHeaders,
+          body: JSON.stringify({
+            caseId: caseItem.id,
+            proofOfAddressUrl: "utility-bill-may-2026.pdf",
+            fileName: "utility-bill-may-2026.pdf",
+          }),
+        });
+      }
       await refreshCase(caseItem.id);
-      setTimeline((current) => [...current, "Customer provided proof of address through the secure handoff."]);
-    });
-  }
-
-  async function useAffidavitFallback() {
-    if (!caseItem) return;
-    await runStep("affidavit", async () => {
-      await fetch("/api/whatsapp/affidavit", {
-        method: "POST",
-        headers: staffHeaders,
-        body: JSON.stringify({
-          caseId: caseItem.id,
-          name: customer.fullName,
-          address: "15 Rivonia Road, Sandton",
-          declarationAccepted: true,
-          responses: [
-            { question: "Do you confirm this is your home address?", answer: "Yes" },
-            { question: "Do you have a utility bill with you?", answer: "No" },
-          ],
-        }),
-      });
-      await fetch("/api/whatsapp/affidavit/video", {
-        method: "POST",
-        headers: staffHeaders,
-        body: JSON.stringify({
-          caseId: caseItem.id,
-          videoUrl: "affidavit-affirmation.mp4",
-        }),
-      });
-      await refreshCase(caseItem.id);
-      setTimeline((current) => [...current, "Customer used the affidavit fallback and recorded a short video affirmation."]);
+      setMessages((current) => [
+        ...current,
+        { sender: "customer", text: useAffidavit ? "I confirm my address by affidavit." : "Uploaded proof of address." },
+        { sender: "platform", text: "Address evidence captured. Please share your live location." },
+      ]);
     });
   }
 
@@ -247,268 +206,248 @@ export function StoreJourneySimulator() {
       await fetch(`/api/whatsapp/session/${caseItem.secureSessionToken}/location`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          latitude: -26.1076,
-          longitude: 28.0567,
-          accuracy: 9.4,
-        }),
+        body: JSON.stringify({ latitude: -26.1076, longitude: 28.0567, accuracy: 9.4 }),
       });
       await refreshCase(caseItem.id);
-      setTimeline((current) => [...current, "Customer shared live GPS coordinates and What3Words was resolved for the address context."]);
+      setMessages((current) => [...current, { sender: "customer", text: "Shared live location." }, { sender: "platform", text: "Location captured. Final risk decision can now be calculated." }]);
     });
   }
 
   async function computeRisk() {
     if (!caseItem) return;
     await runStep("risk", async () => {
-      await fetch("/api/whatsapp/risk-score", {
+      const response = await fetch("/api/whatsapp/risk-score", {
         method: "POST",
         headers: staffHeaders,
         body: JSON.stringify({ caseId: caseItem.id }),
       });
-      await refreshCase(caseItem.id);
-      setTimeline((current) => [...current, "Risk engine evaluated the trust layers and produced the final decision."]);
+      const payload = (await response.json()) as { case?: WhatsAppKycCase };
+      if (payload.case) setCaseItem(payload.case);
+      setMessages((current) => [...current, { sender: "platform", text: "KYC checks completed. Final decision is ready for the provider." }]);
     });
   }
 
-  const actionDisabled = !caseItem;
+  async function sendCampaign() {
+    const recipients = parseCampaignCsv(campaignCsv);
+    if (!recipients.length) return;
+
+    await runStep("campaign", async () => {
+      const createdCases: WhatsAppKycCase[] = [];
+      for (const recipient of recipients) {
+        const response = await fetch("/api/whatsapp/staff/initiate", {
+          method: "POST",
+          headers: staffHeaders,
+          body: JSON.stringify({
+            tenant: provider,
+            customerPhoneNumber: recipient.phoneNumber,
+            deliveryMethod: "whatsapp",
+            notes: `Bulk campaign import for ${recipient.fullName || recipient.phoneNumber}`,
+          }),
+        });
+        const payload = (await response.json()) as { case?: WhatsAppKycCase };
+        if (payload.case) createdCases.push(payload.case);
+      }
+      setCampaignCases(createdCases);
+    });
+  }
+
+  async function loadCampaignFile(file: File | null) {
+    if (!file) return;
+    setCampaignCsv(await file.text());
+  }
 
   return (
-    <main className="min-h-screen bg-[#f3f7fb] text-[#0f2740]">
-      <section className="mx-auto flex max-w-7xl flex-col gap-6 px-4 py-6 lg:px-8">
-        <header className="rounded-[2rem] border border-[#d7e2ee] bg-[linear-gradient(135deg,#0f2f3a,#19495a)] p-6 text-white shadow-sm">
-          <p className="text-xs font-semibold uppercase tracking-[0.22em] text-[#b9d3dd]">KYC-Now In-Store Flow</p>
-          <h1 className="mt-2 text-3xl font-semibold">Customer-at-store WhatsApp KYC journey</h1>
-          <p className="mt-3 max-w-4xl text-sm leading-7 text-[#d5e4ea]">
-            This simulator follows the exact journey you asked for: staff initiation, WhatsApp consent and details, secure web handoff,
-            selfie and liveness, OTP, proof of address or affidavit fallback, live location capture, and final weighted decisioning.
-          </p>
-          {runtime && (
-            <div className="mt-5 flex flex-wrap gap-3 text-sm">
-              <Badge label={`Persistence: ${runtime.persistence}`} />
-              <Badge label={`OTP: ${runtime.providers.otp}`} />
-              <Badge label={`Biometrics: ${runtime.providers.biometrics}`} />
-              <Badge label={`What3Words: ${runtime.providers.what3words}`} />
+    <main className="min-h-screen bg-[#eef4fb] text-[#0f2740]">
+      <section className="mx-auto flex max-w-6xl flex-col gap-6 px-4 py-6 lg:px-8">
+        <header className="rounded-3xl border border-[#d7e2ee] bg-white p-5 shadow-sm">
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#6f859b]">KYC-Now WhatsApp FICA/RICA</p>
+              <h1 className="mt-2 text-2xl font-semibold text-[#0f2f3a]">Network provider customer registration</h1>
             </div>
-          )}
+            {runtime && (
+              <div className="flex flex-wrap gap-2 text-xs font-semibold text-[#315069]">
+                <Badge label={`OTP ${runtime.providers.otp}`} />
+                <Badge label={`Biometrics ${runtime.providers.biometrics}`} />
+                <Badge label={`Location ${runtime.providers.what3words}`} />
+              </div>
+            )}
+          </div>
+
+          <div className="mt-5 grid gap-3 rounded-2xl border border-[#d7e2ee] bg-[#f8fbfe] p-2 sm:grid-cols-2">
+            <button type="button" onClick={() => setRouteMode("single")} className={modeButton(routeMode === "single")}>
+              Single walk-in WhatsApp
+            </button>
+            <button type="button" onClick={() => setRouteMode("bulk")} className={modeButton(routeMode === "bulk")}>
+              Bulk campaign CSV
+            </button>
+          </div>
         </header>
 
-        <div className="grid gap-6 xl:grid-cols-[0.95fr_1.05fr]">
-          <Panel title="1. Store Staff Initiation" accent="store">
-            <div className="grid gap-4">
-              <SelectField
-                label="Operator"
-                value={form.tenant}
-                options={["MTN", "Vodacom", "Cell C"]}
-                onChange={(value) => setForm((current) => ({ ...current, tenant: value as InitiationForm["tenant"] }))}
-              />
-              <InputField
-                label="Customer phone number"
-                value={form.customerPhoneNumber}
-                onChange={(value) => setForm((current) => ({ ...current, customerPhoneNumber: value }))}
-              />
-              <SelectField
-                label="Delivery method"
-                value={form.deliveryMethod}
-                options={["whatsapp", "qr"]}
-                onChange={(value) => setForm((current) => ({ ...current, deliveryMethod: value as InitiationForm["deliveryMethod"] }))}
-              />
-              <button
-                type="button"
-                onClick={() => void initiateCase()}
-                className="rounded-full bg-[#0f2f3a] px-5 py-3 text-sm font-semibold text-white"
-              >
-                {busyKey === "initiate" ? "Starting case..." : "Start customer journey"}
-              </button>
-              {caseItem && (
-                <div className="rounded-2xl border border-[#d7e2ee] bg-[#f8fbfe] px-4 py-3 text-sm text-[#4d677f]">
-                  Case created: <span className="font-semibold text-[#18344d]">{caseItem.reference}</span>
-                  {" · "}
-                  status: <span className="font-semibold text-[#18344d]">{caseItem.status}</span>
-                </div>
-              )}
-            </div>
-          </Panel>
-
-          <Panel title="2. Customer WhatsApp Conversation" accent="chat">
-            <div className="rounded-[1.5rem] border border-[#d7e2ee] bg-[#e9f7ef] p-4">
-              <div className="space-y-3">
-                {timeline.slice(-6).map((item, index) => (
-                  <div key={`${item}-${index}`} className="rounded-2xl bg-white px-4 py-3 text-sm leading-6 text-[#18344d]">
-                    {item}
-                  </div>
-                ))}
+        {routeMode === "single" ? (
+          <section className="grid gap-6 lg:grid-cols-[0.9fr_1.1fr]">
+            <Panel title="Store initiation">
+              <div className="grid gap-4">
+                <SelectField label="Network provider" value={provider} options={["MTN", "Vodacom", "Cell C"]} onChange={(value) => setProvider(value as NetworkProvider)} />
+                <InputField label="Customer WhatsApp number" value={customer.phoneNumber} onChange={(value) => setCustomer((current) => ({ ...current, phoneNumber: value }))} />
+                <button type="button" onClick={() => void sendWalkInInvite()} className="rounded-full bg-[#0f2f3a] px-5 py-3 text-sm font-semibold text-white">
+                  {busyKey === "invite" ? "Sending..." : "Send WhatsApp KYC"}
+                </button>
+                {caseItem && <CaseSummary kycCase={caseItem} />}
               </div>
-            </div>
-            <div className="mt-4 grid gap-4">
-              <button
-                type="button"
-                disabled={actionDisabled || busyKey !== null}
-                onClick={() => void sendConsent()}
-                className="rounded-full border border-[#d0dde9] bg-white px-4 py-3 text-sm font-semibold text-[#244661] disabled:opacity-45"
-              >
-                Customer agrees to consent
-              </button>
-              <div className="grid gap-4 md:grid-cols-3">
-                <InputField label="Full name" value={customer.fullName} onChange={(value) => setCustomer((current) => ({ ...current, fullName: value }))} />
-                <InputField label="SA ID number" value={customer.idNumber} onChange={(value) => setCustomer((current) => ({ ...current, idNumber: value }))} />
-                <InputField label="Phone number" value={customer.phoneNumber} onChange={(value) => setCustomer((current) => ({ ...current, phoneNumber: value }))} />
-              </div>
-              <button
-                type="button"
-                disabled={actionDisabled || busyKey !== null}
-                onClick={() => void submitDetails()}
-                className="rounded-full border border-[#d0dde9] bg-white px-4 py-3 text-sm font-semibold text-[#244661] disabled:opacity-45"
-              >
-                Submit customer details from WhatsApp
-              </button>
-            </div>
-          </Panel>
-        </div>
+            </Panel>
 
-        <div className="grid gap-6 xl:grid-cols-[1.05fr_0.95fr]">
-          <Panel title="3. Secure Web Handoff" accent="secure">
-            <div className="grid gap-4">
-              {secureSessionLink ? (
-                <div className="rounded-[1.5rem] border border-[#d7e2ee] bg-[#f8fbfe] p-4">
-                  <p className="text-sm text-[#536b82]">Signed customer session created.</p>
-                  <Link href={secureSessionLink} className="mt-2 inline-block text-sm font-semibold text-[#1f4b6d] underline">
-                    Open secure verification session
-                  </Link>
-                </div>
-              ) : (
-                <div className="rounded-[1.5rem] border border-dashed border-[#cfdbe6] bg-[#fbfdff] p-4 text-sm text-[#72879c]">
-                  Start the case first to generate the secure session handoff.
-                </div>
-              )}
-
-              <div className="grid gap-3 md:grid-cols-2">
-                <ActionCard
-                  title="Device intelligence"
-                  description="Capture browser fingerprint, OS, screen size, timezone, cookies, and touch capability."
-                  buttonLabel={busyKey === "device" ? "Capturing..." : "Capture device context"}
-                  onClick={() => void captureDevice()}
-                  disabled={!secureSessionLink || busyKey !== null}
-                />
-                <ActionCard
-                  title="Selfie and liveness"
-                  description="Run guided selfie capture with liveness and face match against the uploaded ID."
-                  buttonLabel={busyKey === "biometric" ? "Running..." : "Run biometrics"}
-                  onClick={() => void runBiometrics()}
-                  disabled={actionDisabled || busyKey !== null}
-                />
-                <ActionCard
-                  title="OTP verification"
-                  description="Send OTP to the customer number and verify it before allowing approval."
-                  buttonLabel={busyKey === "otp-send" ? "Sending..." : "Send OTP"}
-                  secondaryLabel={busyKey === "otp-verify" ? "Verifying..." : "Verify OTP"}
-                  onClick={() => void sendOtp()}
-                  onSecondaryClick={() => void verifyOtp()}
-                  disabled={actionDisabled || busyKey !== null}
-                />
-                <ActionCard
-                  title="Location capture"
-                  description="Customer answers 'Yes, I am home' and shares GPS coordinates for What3Words resolution."
-                  buttonLabel={busyKey === "location" ? "Capturing..." : "Capture location"}
-                  onClick={() => void captureLocation()}
-                  disabled={!secureSessionLink || busyKey !== null}
-                />
-              </div>
-            </div>
-          </Panel>
-
-          <Panel title="4. Address and Affidavit" accent="address">
-            <div className="grid gap-3">
-              <ActionCard
-                title="Proof of address"
-                description="Simulate the customer uploading a utility bill or bank statement."
-                buttonLabel={busyKey === "poa" ? "Uploading..." : "Use proof of address"}
-                onClick={() => void uploadProofOfAddress()}
-                disabled={actionDisabled || busyKey !== null}
-              />
-              <ActionCard
-                title="Digital affidavit fallback"
-                description="Use the fallback flow with structured Q&A and a short affirmation video."
-                buttonLabel={busyKey === "affidavit" ? "Saving..." : "Use affidavit fallback"}
-                onClick={() => void useAffidavitFallback()}
-                disabled={actionDisabled || busyKey !== null}
-              />
-            </div>
-          </Panel>
-        </div>
-
-        <div className="grid gap-6 xl:grid-cols-[0.95fr_1.05fr]">
-          <Panel title="5. Decision and Review Outcome" accent="decision">
-            <button
-              type="button"
-              disabled={actionDisabled || busyKey !== null}
-              onClick={() => void computeRisk()}
-              className="rounded-full bg-[#2f5f55] px-5 py-3 text-sm font-semibold text-white disabled:opacity-45"
-            >
-              {busyKey === "risk" ? "Computing..." : "Compute final risk decision"}
-            </button>
-
-            {caseItem ? (
-              <div className="mt-4 grid gap-4 md:grid-cols-2">
-                <InfoCard label="Case reference" value={caseItem.reference} />
-                <InfoCard label="Current flow state" value={caseItem.status} />
-                <InfoCard label="Customer" value={caseItem.applicant.fullName ?? "Pending"} />
-                <InfoCard label="Phone" value={caseItem.applicant.phoneNumber ?? "Pending"} />
-                <InfoCard label="OTP" value={caseItem.verification.otp?.status ?? "Pending"} />
-                <InfoCard label="What3Words" value={caseItem.geoCapture?.what3words ?? "Pending"} />
-              </div>
-            ) : null}
-          </Panel>
-
-          <Panel title="6. Trust Layers and Final Recommendation" accent="risk">
-            {caseItem?.risk ? (
-              <>
-                <div className="flex flex-wrap gap-3">
-                  <Badge label={`Score ${caseItem.risk.score}`} />
-                  <Badge label={`Band ${caseItem.risk.band}`} />
-                  <Badge label={`Decision ${caseItem.risk.decision}`} />
-                </div>
-                <div className="mt-4 grid gap-3 md:grid-cols-2">
-                  {trustSummary.map((item) => (
-                    <div key={item} className="rounded-2xl border border-[#dfe8f0] bg-[#f8fbfe] px-4 py-3 text-sm text-[#27445e]">
-                      {item}
+            <Panel title="Customer WhatsApp journey">
+              <div className="rounded-[1.5rem] border border-[#cfe1d8] bg-[#e7f6ec] p-4">
+                <div className="space-y-3">
+                  {messages.map((message, index) => (
+                    <div key={`${message.text}-${index}`} className={`max-w-[85%] rounded-2xl px-4 py-3 text-sm leading-6 ${message.sender === "customer" ? "ml-auto bg-[#0f2f3a] text-white" : "bg-white text-[#18344d]"}`}>
+                      {message.text}
                     </div>
                   ))}
                 </div>
-              </>
-            ) : (
-              <p className="text-sm leading-6 text-[#677f95]">
-                Run the full customer journey, then compute the risk score to see whether the case auto-approves, routes to manual review, or rejects.
-              </p>
-            )}
-          </Panel>
-        </div>
+              </div>
+
+              <div className="mt-5 grid gap-4">
+                {caseItem?.status === "consent_pending" && (
+                  <button type="button" onClick={() => void acceptConsent()} className="primary-action">
+                    {busyKey === "consent" ? "Capturing..." : "Customer replies START KYC and AGREE"}
+                  </button>
+                )}
+
+                {caseItem?.status === "details_pending" && (
+                  <>
+                    <div className="grid gap-3 md:grid-cols-3">
+                      <InputField label="Full name" value={customer.fullName} onChange={(value) => setCustomer((current) => ({ ...current, fullName: value }))} />
+                      <InputField label="SA ID number" value={customer.idNumber} onChange={(value) => setCustomer((current) => ({ ...current, idNumber: value }))} />
+                      <InputField label="Mobile number" value={customer.phoneNumber} onChange={(value) => setCustomer((current) => ({ ...current, phoneNumber: value }))} />
+                    </div>
+                    <button type="button" onClick={() => void submitDetails()} className="primary-action">
+                      {busyKey === "details" ? "Submitting..." : "Submit WhatsApp details"}
+                    </button>
+                  </>
+                )}
+
+                {caseItem?.status === "selfie_pending" && secureSessionLink && (
+                  <div className="grid gap-3 rounded-2xl border border-[#d7e2ee] bg-[#f8fbfe] p-4">
+                    <Link href={secureSessionLink} className="primary-action text-center">
+                      Open secure camera session
+                    </Link>
+                    <button type="button" onClick={() => void refreshCase()} className="secondary-action">
+                      Refresh after selfie capture
+                    </button>
+                  </div>
+                )}
+
+                {caseItem?.status === "otp_pending" && (
+                  <div className="flex flex-wrap gap-3">
+                    <button type="button" onClick={() => void sendOtp()} className="primary-action">
+                      {busyKey === "otp-send" ? "Sending..." : "Send OTP"}
+                    </button>
+                    <button type="button" onClick={() => void verifyOtp()} className="secondary-action">
+                      {busyKey === "otp-verify" ? "Verifying..." : "Verify OTP"}
+                    </button>
+                  </div>
+                )}
+
+                {caseItem?.status === "address_pending" && (
+                  <div className="flex flex-wrap gap-3">
+                    <button type="button" onClick={() => void submitAddress(false)} className="primary-action">
+                      Use proof of address
+                    </button>
+                    <button type="button" onClick={() => void submitAddress(true)} className="secondary-action">
+                      Use affidavit fallback
+                    </button>
+                  </div>
+                )}
+
+                {caseItem?.status === "location_pending" && (
+                  <button type="button" onClick={() => void captureLocation()} className="primary-action">
+                    {busyKey === "location" ? "Capturing..." : "Share location"}
+                  </button>
+                )}
+
+                {caseItem?.status === "risk_review" && (
+                  <button type="button" onClick={() => void computeRisk()} className="primary-action">
+                    {busyKey === "risk" ? "Scoring..." : "Complete KYC decision"}
+                  </button>
+                )}
+
+                {caseItem?.risk && (
+                  <div className="rounded-2xl border border-[#d7e2ee] bg-[#f8fbfe] p-4 text-sm text-[#284761]">
+                    Decision: <span className="font-semibold">{caseItem.risk.decision}</span> with score <span className="font-semibold">{caseItem.risk.score}</span>.
+                  </div>
+                )}
+
+                {!caseItem && <p className="text-sm text-[#667d93]">{nextStep}</p>}
+              </div>
+            </Panel>
+          </section>
+        ) : (
+          <section className="grid gap-6 lg:grid-cols-[0.9fr_1.1fr]">
+            <Panel title="Bulk campaign setup">
+              <div className="grid gap-4">
+                <SelectField label="Network provider" value={provider} options={["MTN", "Vodacom", "Cell C"]} onChange={(value) => setProvider(value as NetworkProvider)} />
+                <label className="block">
+                  <span className="mb-2 block text-sm font-medium text-[#26445f]">Unregistered customer CSV</span>
+                  <textarea value={campaignCsv} onChange={(event) => setCampaignCsv(event.target.value)} className="min-h-44 w-full rounded-2xl border border-[#c8d6e3] px-4 py-3 text-sm outline-none focus:border-[#53718f]" />
+                </label>
+                <input type="file" accept=".csv,text/csv" onChange={(event) => void loadCampaignFile(event.target.files?.[0] ?? null)} className="text-sm text-[#536b82]" />
+                <button type="button" onClick={() => void sendCampaign()} className="rounded-full bg-[#0f2f3a] px-5 py-3 text-sm font-semibold text-white">
+                  {busyKey === "campaign" ? "Sending..." : "Send campaign WhatsApp links"}
+                </button>
+              </div>
+            </Panel>
+
+            <Panel title="Campaign queue">
+              {campaignCases.length ? (
+                <div className="grid gap-3">
+                  {campaignCases.map((kycCase) => (
+                    <div key={kycCase.id} className="rounded-2xl border border-[#d7e2ee] bg-[#f8fbfe] p-4 text-sm text-[#284761]">
+                      <p className="font-semibold text-[#17324a]">{kycCase.reference}</p>
+                      <p>{kycCase.tenant} WhatsApp KYC sent to {kycCase.applicant.phoneNumber}</p>
+                      <p className="mt-1 text-[#667d93]">Status: {kycCase.status}</p>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-sm leading-6 text-[#667d93]">
+                  Bulk campaigns only send WhatsApp KYC links to unregistered MSISDNs. Each customer completes consent, identity, selfie, OTP, address, location, and risk scoring in their own secure session.
+                </p>
+              )}
+            </Panel>
+          </section>
+        )}
       </section>
     </main>
   );
 }
 
-function Panel({
-  title,
-  accent,
-  children,
-}: {
-  title: string;
-  accent: "store" | "chat" | "secure" | "address" | "decision" | "risk";
-  children: React.ReactNode;
-}) {
-  const tone: Record<typeof accent, string> = {
-    store: "border-[#d7e2ee] bg-white",
-    chat: "border-[#d7e2ee] bg-white",
-    secure: "border-[#d7e2ee] bg-white",
-    address: "border-[#d7e2ee] bg-white",
-    decision: "border-[#d7e2ee] bg-white",
-    risk: "border-[#d7e2ee] bg-white",
-  };
+function getNextStep(kycCase: WhatsAppKycCase | null) {
+  if (!kycCase) return "Start by sending the WhatsApp KYC message to the walk-in customer.";
+  if (kycCase.status === "consent_pending") return "Customer must reply START KYC and AGREE.";
+  if (kycCase.status === "details_pending") return "Customer submits name, SA ID, and mobile number.";
+  if (kycCase.status === "selfie_pending") return "Customer opens the secure camera session.";
+  if (kycCase.status === "otp_pending") return "Send and verify the OTP.";
+  if (kycCase.status === "address_pending") return "Capture proof of address or affidavit.";
+  if (kycCase.status === "location_pending") return "Capture live GPS location.";
+  if (kycCase.status === "risk_review") return "Run final risk scoring.";
+  return "KYC flow completed.";
+}
 
+function CaseSummary({ kycCase }: { kycCase: WhatsAppKycCase }) {
   return (
-    <section className={`rounded-[2rem] border p-6 shadow-sm ${tone[accent]}`}>
-      <h2 className="text-xl font-semibold text-[#112a43]">{title}</h2>
+    <div className="rounded-2xl border border-[#d7e2ee] bg-[#f8fbfe] p-4 text-sm text-[#4d677f]">
+      <p>Reference: <span className="font-semibold text-[#18344d]">{kycCase.reference}</span></p>
+      <p>Status: <span className="font-semibold text-[#18344d]">{kycCase.status}</span></p>
+    </div>
+  );
+}
+
+function Panel({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <section className="rounded-3xl border border-[#d7e2ee] bg-white p-5 shadow-sm">
+      <h2 className="text-lg font-semibold text-[#112a43]">{title}</h2>
       <div className="mt-4">{children}</div>
     </section>
   );
@@ -526,11 +465,7 @@ function InputField({
   return (
     <label className="block">
       <span className="mb-2 block text-sm font-medium text-[#26445f]">{label}</span>
-      <input
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-        className="w-full rounded-2xl border border-[#c8d6e3] px-4 py-3 text-sm outline-none focus:border-[#53718f]"
-      />
+      <input value={value} onChange={(event) => onChange(event.target.value)} className="w-full rounded-2xl border border-[#c8d6e3] px-4 py-3 text-sm outline-none focus:border-[#53718f]" />
     </label>
   );
 }
@@ -549,11 +484,7 @@ function SelectField({
   return (
     <label className="block">
       <span className="mb-2 block text-sm font-medium text-[#26445f]">{label}</span>
-      <select
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-        className="w-full rounded-2xl border border-[#c8d6e3] px-4 py-3 text-sm outline-none focus:border-[#53718f]"
-      >
+      <select value={value} onChange={(event) => onChange(event.target.value)} className="w-full rounded-2xl border border-[#c8d6e3] px-4 py-3 text-sm outline-none focus:border-[#53718f]">
         {options.map((option) => (
           <option key={option} value={option}>
             {option}
@@ -564,60 +495,38 @@ function SelectField({
   );
 }
 
-function ActionCard({
-  title,
-  description,
-  buttonLabel,
-  secondaryLabel,
-  onClick,
-  onSecondaryClick,
-  disabled,
-}: {
-  title: string;
-  description: string;
-  buttonLabel: string;
-  secondaryLabel?: string;
-  onClick: () => void;
-  onSecondaryClick?: () => void;
-  disabled: boolean;
-}) {
-  return (
-    <div className="rounded-[1.5rem] border border-[#dfe8f0] bg-[#f8fbfe] p-4">
-      <p className="font-semibold text-[#17324a]">{title}</p>
-      <p className="mt-2 text-sm leading-6 text-[#667d93]">{description}</p>
-      <div className="mt-4 flex flex-wrap gap-3">
-        <button
-          type="button"
-          onClick={onClick}
-          disabled={disabled}
-          className="rounded-full bg-[#0f2f3a] px-4 py-2 text-sm font-semibold text-white disabled:opacity-45"
-        >
-          {buttonLabel}
-        </button>
-        {secondaryLabel && onSecondaryClick && (
-          <button
-            type="button"
-            onClick={onSecondaryClick}
-            disabled={disabled}
-            className="rounded-full border border-[#d0dde9] bg-white px-4 py-2 text-sm font-semibold text-[#244661] disabled:opacity-45"
-          >
-            {secondaryLabel}
-          </button>
-        )}
-      </div>
-    </div>
-  );
-}
-
 function Badge({ label }: { label: string }) {
-  return <span className="rounded-full bg-white/10 px-3 py-1 text-sm font-semibold">{label}</span>;
+  return <span className="rounded-full bg-[#e8f0f6] px-3 py-1 text-xs font-semibold text-[#315069]">{label}</span>;
 }
 
-function InfoCard({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-2xl border border-[#dde6ef] bg-[#f9fcff] px-4 py-3">
-      <p className="text-xs uppercase tracking-[0.12em] text-[#8ba0b3]">{label}</p>
-      <p className="mt-2 text-sm font-semibold text-[#17324a]">{value}</p>
-    </div>
-  );
+function modeButton(active: boolean) {
+  return `rounded-xl px-4 py-3 text-sm font-semibold ${active ? "bg-[#0f2f3a] text-white" : "text-[#244661]"}`;
+}
+
+function parseCampaignCsv(value: string): CampaignRecipient[] {
+  const rows = value
+    .split(/\r?\n/)
+    .map((row) => row.trim())
+    .filter(Boolean);
+  if (rows.length < 2) return [];
+
+  const headers = rows[0].split(",").map((header) => header.trim().toLowerCase());
+  const nameIndex = findHeader(headers, ["fullname", "full_name", "name", "customername", "customer_name"]);
+  const idIndex = findHeader(headers, ["idnumber", "id_number", "said", "sa_id", "ricaid", "ficaid"]);
+  const phoneIndex = findHeader(headers, ["phonenumber", "phone_number", "phone", "msisdn", "mobile", "cell"]);
+  if (phoneIndex < 0) return [];
+
+  return rows
+    .slice(1)
+    .map((row) => row.split(",").map((cell) => cell.trim()))
+    .map((cells) => ({
+      fullName: nameIndex >= 0 ? cells[nameIndex] ?? "" : "",
+      idNumber: idIndex >= 0 ? cells[idIndex] ?? "" : "",
+      phoneNumber: cells[phoneIndex] ?? "",
+    }))
+    .filter((recipient) => recipient.phoneNumber.replace(/\D/g, "").length >= 9);
+}
+
+function findHeader(headers: string[], aliases: string[]) {
+  return headers.findIndex((header) => aliases.includes(header.replace(/[^a-z0-9]/g, "")));
 }

@@ -35,6 +35,7 @@ export async function POST(request: NextRequest) {
   }
 
   return NextResponse.json({
+    case: updatedCase,
     provider: result.provider,
     providerReference: result.providerReference,
     livenessScore: result.livenessScore,

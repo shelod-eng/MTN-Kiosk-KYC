@@ -13,6 +13,7 @@ export async function POST(request: NextRequest) {
   }
 
   return NextResponse.json({
+    case: updatedCase,
     caseId: updatedCase.id,
     risk: updatedCase.risk,
     status: updatedCase.status,

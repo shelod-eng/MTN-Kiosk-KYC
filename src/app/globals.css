@@ -44,3 +44,22 @@ select {
 .bpmn-canvas .djs-palette {
   border-right: 1px solid #d7e2ee;
 }
+
+.primary-action {
+  border-radius: 9999px;
+  background: #0f2f3a;
+  padding: 0.75rem 1.25rem;
+  font-size: 0.875rem;
+  font-weight: 700;
+  color: white;
+}
+
+.secondary-action {
+  border-radius: 9999px;
+  border: 1px solid #d0dde9;
+  background: white;
+  padding: 0.75rem 1.25rem;
+  font-size: 0.875rem;
+  font-weight: 700;
+  color: #244661;
+}
