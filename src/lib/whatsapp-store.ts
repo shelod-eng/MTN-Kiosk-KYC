@@ -15,10 +15,13 @@ import {
   type WhatsAppWebhookPayload,
 } from "@/lib/whatsapp-kyc";
 import { hasSupabaseConfig, supabaseRequest } from "@/lib/supabase-rest";
+import { validateSouthAfricanIdNumber } from "@/lib/sa-id";
+import type { BulkCampaignResult, BulkCampaignRow } from "@/lib/bulk-campaign";
 
 type StoreShape = {
   cases: Map<string, WhatsAppKycCase>;
   sessions: Map<string, { caseId: string; expiresAt: string }>;
+  bulkBatches: Map<string, BulkCampaignResult>;
 };
 
 const globalStore = globalThis as typeof globalThis & { __whatsappKycStore?: StoreShape };
@@ -28,6 +31,7 @@ function getMemoryStore() {
     globalStore.__whatsappKycStore = {
       cases: new Map<string, WhatsAppKycCase>(),
       sessions: new Map<string, { caseId: string; expiresAt: string }>(),
+      bulkBatches: new Map<string, BulkCampaignResult>(),
     };
   }
 
@@ -72,6 +76,26 @@ async function persistCase(kycCase: WhatsAppKycCase) {
         decision: kycCase.risk?.decision ?? null,
         updated_at: kycCase.updatedAt,
         case_payload: kycCase,
+      },
+    ]),
+  });
+
+  const idValidation = kycCase.applicant.idNumber ? validateSouthAfricanIdNumber(kycCase.applicant.idNumber) : null;
+  await supabaseRequest("kyc_applicants?on_conflict=id", {
+    method: "POST",
+    body: JSON.stringify([
+      {
+        id: `applicant_${kycCase.id}`,
+        case_id: kycCase.id,
+        full_name: kycCase.applicant.fullName ?? null,
+        id_number: kycCase.applicant.idNumber ?? null,
+        phone_number: kycCase.applicant.phoneNumber ?? kycCase.staffInitiation.customerPhoneNumber,
+        consent_given: Boolean(kycCase.applicant.consentGiven),
+        consent_captured_at: kycCase.consentCapturedAt ?? null,
+        date_of_birth: idValidation?.dateOfBirth ?? null,
+        citizenship: idValidation?.citizenship ?? null,
+        gender: idValidation?.gender ?? null,
+        updated_at: kycCase.updatedAt,
       },
     ]),
   });
@@ -121,6 +145,63 @@ export async function listCases() {
 export async function createCase(input: StaffInitiationPayload) {
   const nextCase = createWhatsAppCase(input);
   return persistCase(nextCase);
+}
+
+export async function persistBulkBatch(result: BulkCampaignResult, rows: BulkCampaignRow[]) {
+  if (!hasSupabaseConfig()) {
+    getMemoryStore().bulkBatches.set(result.batchId, result);
+    return result;
+  }
+
+  await supabaseRequest("kyc_bulk_batches?on_conflict=id", {
+    method: "POST",
+    body: JSON.stringify([
+      {
+        id: result.batchId,
+        batch_reference: result.batchReference,
+        provider: result.provider,
+        source: result.source,
+        source_file_name: result.sourceFileName,
+        status: result.status,
+        received_at: result.receivedAt,
+        row_count: result.rowCount,
+        valid_count: result.validCount,
+        error_count: result.errorCount,
+        provider_report_csv: result.providerReport,
+        metadata: {
+          errors: result.errors,
+          caseReferences: result.cases.map((kycCase) => kycCase.reference),
+        },
+      },
+    ]),
+  });
+
+  if (rows.length > 0) {
+    await supabaseRequest("kyc_bulk_rows?on_conflict=batch_id,row_number", {
+      method: "POST",
+      body: JSON.stringify(
+        rows.map((row) => {
+          const kycCase = result.cases.find((candidate) => candidate.staffInitiation.bulkCampaign?.rowNumber === row.rowNumber);
+          return {
+            id: `bulk_row_${result.batchId}_${row.rowNumber}`,
+            batch_id: result.batchId,
+            row_number: row.rowNumber,
+            full_name: row.fullName,
+            id_number: row.idNumber,
+            phone_number: row.phoneNumber,
+            campaign_id: row.campaignId ?? null,
+            segment: row.segment ?? null,
+            provider_reference: row.providerReference ?? null,
+            case_id: kycCase?.id ?? null,
+            status: kycCase ? "created" : "failed",
+            error_message: null,
+          };
+        })
+      ),
+    });
+  }
+
+  return result;
 }
 
 export async function getCase(caseId: string) {
@@ -249,6 +330,13 @@ export async function captureIdDocument(caseId: string, payload: { documentUrl: 
   if (!current) return null;
   const nextCase = {
     ...current,
+    verification: {
+      ...current.verification,
+      identityDocument: {
+        documentType: payload.documentType,
+        ocrConfidence: payload.ocrConfidence ?? 0.9,
+      },
+    },
     documentUrls: {
       ...current.documentUrls,
       idDocument: payload.documentUrl,
@@ -258,9 +346,10 @@ export async function captureIdDocument(caseId: string, payload: { documentUrl: 
   return persistCase(nextCase);
 }
 
-export async function captureProofOfAddress(caseId: string, payload: { proofOfAddressUrl: string; fileName?: string }) {
+export async function captureProofOfAddress(caseId: string, payload: { proofOfAddressUrl: string; fileName?: string; documentType?: string }) {
   const current = await loadCase(caseId);
   if (!current) return null;
+  const documentType = payload.documentType ?? inferProofOfAddressDocumentType(payload.fileName ?? payload.proofOfAddressUrl);
   const nextStatus =
     current.status === "address_pending"
       ? current.verification.locationShared
@@ -273,6 +362,12 @@ export async function captureProofOfAddress(caseId: string, payload: { proofOfAd
     verification: {
       ...current.verification,
       proofOfAddressProvided: true,
+      proofOfAddressDocument: {
+        documentType,
+        fileName: payload.fileName,
+        accepted: isAcceptedProofOfAddressDocument(documentType),
+        simulatedOcrScore: simulateAddressOcrScore(documentType),
+      },
     },
     documentUrls: {
       ...current.documentUrls,
@@ -281,6 +376,33 @@ export async function captureProofOfAddress(caseId: string, payload: { proofOfAd
     updatedAt: new Date().toISOString(),
   };
   return persistCase(nextCase);
+}
+
+function inferProofOfAddressDocumentType(value: string) {
+  const normalized = value.toLowerCase();
+  if (normalized.includes("bank")) return "Bank statement";
+  if (normalized.includes("eskom") || normalized.includes("electric")) return "Eskom or municipal electricity account";
+  if (normalized.includes("water") || normalized.includes("rates") || normalized.includes("municipal")) return "Water and rates account";
+  if (normalized.includes("telkom") || normalized.includes("internet") || normalized.includes("isp")) return "Telkom or internet service provider invoice";
+  if (normalized.includes("utility")) return "Utility bill";
+  return "Proof of address document";
+}
+
+function isAcceptedProofOfAddressDocument(documentType: string) {
+  return [
+    "Bank statement",
+    "Eskom or municipal electricity account",
+    "Water and rates account",
+    "Telkom or internet service provider invoice",
+    "Utility bill",
+  ].includes(documentType);
+}
+
+function simulateAddressOcrScore(documentType: string) {
+  if (documentType === "Proof of address document") return 0.74;
+  if (documentType === "Bank statement") return 0.91;
+  if (documentType === "Utility bill") return 0.88;
+  return 0.86;
 }
 
 export async function upsertOtp(caseId: string, mode: "send" | "verify", attempts = 1) {

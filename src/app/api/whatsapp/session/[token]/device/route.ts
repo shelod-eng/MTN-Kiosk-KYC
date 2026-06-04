@@ -13,8 +13,10 @@ export async function POST(request: NextRequest, context: RouteContext) {
   }
 
   const body = (await request.json()) as Record<string, unknown>;
+  const forwardedFor = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim();
   const updatedCase = await captureDeviceIntelligence(kycCase.id, {
     browserFingerprint: String(body.browserFingerprint ?? ""),
+    ipAddress: forwardedFor ?? request.headers.get("x-real-ip") ?? "demo-local-ip",
     operatingSystem: String(body.operatingSystem ?? ""),
     browser: String(body.browser ?? ""),
     screenSize: String(body.screenSize ?? ""),

@@ -20,10 +20,18 @@ type CustomerDetails = {
   phoneNumber: string;
 };
 
-type CampaignRecipient = {
-  fullName: string;
-  idNumber: string;
-  phoneNumber: string;
+type BulkCampaignBatch = {
+  batchId: string;
+  batchReference: string;
+  provider: NetworkProvider;
+  sourceFileName: string;
+  status: string;
+  rowCount: number;
+  validCount: number;
+  errorCount: number;
+  cases: WhatsAppKycCase[];
+  errors: Array<{ rowNumber: number; message: string }>;
+  providerReport: string;
 };
 
 type RuntimeStatus = {
@@ -41,8 +49,11 @@ export function StoreJourneySimulator() {
     phoneNumber: "+27785929455",
   });
   const [campaignCsv, setCampaignCsv] = useState("fullName,idNumber,phoneNumber\nNomsa Dlamini,8801015800082,+27821234567\nThabo Molefe,9002025800088,+27731234567");
+  const [campaignFileName, setCampaignFileName] = useState("provider-daily-rica-file.csv");
   const [caseItem, setCaseItem] = useState<WhatsAppKycCase | null>(null);
   const [campaignCases, setCampaignCases] = useState<WhatsAppKycCase[]>([]);
+  const [campaignBatch, setCampaignBatch] = useState<BulkCampaignBatch | null>(null);
+  const [campaignError, setCampaignError] = useState<string | null>(null);
   const [runtime, setRuntime] = useState<RuntimeStatus | null>(null);
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [messages, setMessages] = useState<Array<{ sender: "platform" | "customer"; text: string }>>([
@@ -228,32 +239,43 @@ export function StoreJourneySimulator() {
   }
 
   async function sendCampaign() {
-    const recipients = parseCampaignCsv(campaignCsv);
-    if (!recipients.length) return;
-
     await runStep("campaign", async () => {
-      const createdCases: WhatsAppKycCase[] = [];
-      for (const recipient of recipients) {
-        const response = await fetch("/api/whatsapp/staff/initiate", {
-          method: "POST",
-          headers: staffHeaders,
-          body: JSON.stringify({
-            tenant: provider,
-            customerPhoneNumber: recipient.phoneNumber,
-            deliveryMethod: "whatsapp",
-            notes: `Bulk campaign import for ${recipient.fullName || recipient.phoneNumber}`,
-          }),
-        });
-        const payload = (await response.json()) as { case?: WhatsAppKycCase };
-        if (payload.case) createdCases.push(payload.case);
+      setCampaignError(null);
+      const response = await fetch("/api/whatsapp/bulk-campaigns", {
+        method: "POST",
+        headers: staffHeaders,
+        body: JSON.stringify({
+          provider,
+          csv: campaignCsv,
+          source: "upload",
+          sourceFileName: campaignFileName,
+        }),
+      });
+      const payload = (await response.json()) as { batch?: BulkCampaignBatch; error?: string };
+      if (!response.ok || !payload.batch) {
+        setCampaignError(payload.error ?? "Bulk campaign ingestion failed.");
+        return;
       }
-      setCampaignCases(createdCases);
+      setCampaignBatch(payload.batch);
+      setCampaignCases(payload.batch.cases);
     });
   }
 
   async function loadCampaignFile(file: File | null) {
     if (!file) return;
+    setCampaignFileName(file.name);
     setCampaignCsv(await file.text());
+  }
+
+  function downloadProviderReport() {
+    if (!campaignBatch) return;
+    const blob = new Blob([campaignBatch.providerReport], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `${campaignBatch.batchReference}-provider-report.csv`;
+    anchor.click();
+    URL.revokeObjectURL(url);
   }
 
   return (
@@ -388,6 +410,7 @@ export function StoreJourneySimulator() {
             <Panel title="Bulk campaign setup">
               <div className="grid gap-4">
                 <SelectField label="Network provider" value={provider} options={["MTN", "Vodacom", "Cell C"]} onChange={(value) => setProvider(value as NetworkProvider)} />
+                <InputField label="Source file name" value={campaignFileName} onChange={setCampaignFileName} />
                 <label className="block">
                   <span className="mb-2 block text-sm font-medium text-[#26445f]">Unregistered customer CSV</span>
                   <textarea value={campaignCsv} onChange={(event) => setCampaignCsv(event.target.value)} className="min-h-44 w-full rounded-2xl border border-[#c8d6e3] px-4 py-3 text-sm outline-none focus:border-[#53718f]" />
@@ -396,10 +419,36 @@ export function StoreJourneySimulator() {
                 <button type="button" onClick={() => void sendCampaign()} className="rounded-full bg-[#0f2f3a] px-5 py-3 text-sm font-semibold text-white">
                   {busyKey === "campaign" ? "Sending..." : "Send campaign WhatsApp links"}
                 </button>
+                {campaignError && <p className="text-sm text-[#9a3b32]">{campaignError}</p>}
               </div>
             </Panel>
 
             <Panel title="Campaign queue">
+              {campaignBatch && (
+                <div className="mb-4 rounded-2xl border border-[#d7e2ee] bg-[#f8fbfe] p-4 text-sm text-[#284761]">
+                  <p className="font-semibold text-[#17324a]">{campaignBatch.batchReference}</p>
+                  <p>
+                    {campaignBatch.provider} batch status {campaignBatch.status}: {campaignBatch.validCount} created, {campaignBatch.errorCount} errors from {campaignBatch.rowCount} rows.
+                  </p>
+                  <div className="mt-3 flex flex-wrap gap-3">
+                    <button type="button" onClick={downloadProviderReport} className="secondary-action">
+                      Export provider CSV
+                    </button>
+                    <Badge label="SFTP-ready schema" />
+                  </div>
+                </div>
+              )}
+
+              {campaignBatch?.errors.length ? (
+                <div className="mb-4 grid gap-2">
+                  {campaignBatch.errors.map((error) => (
+                    <div key={`${error.rowNumber}-${error.message}`} className="rounded-2xl border border-[#f0d4ce] bg-[#fff7f5] px-4 py-3 text-sm text-[#854239]">
+                      Row {error.rowNumber}: {error.message}
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+
               {campaignCases.length ? (
                 <div className="grid gap-3">
                   {campaignCases.map((kycCase) => (
@@ -407,6 +456,11 @@ export function StoreJourneySimulator() {
                       <p className="font-semibold text-[#17324a]">{kycCase.reference}</p>
                       <p>{kycCase.tenant} WhatsApp KYC sent to {kycCase.applicant.phoneNumber}</p>
                       <p className="mt-1 text-[#667d93]">Status: {kycCase.status}</p>
+                      {kycCase.secureSessionToken && (
+                        <Link href={`/verify/${kycCase.secureSessionToken}`} className="mt-2 inline-block font-medium text-[#1f4b6d] underline">
+                          Open secure KYC link
+                        </Link>
+                      )}
                     </div>
                   ))}
                 </div>
@@ -501,32 +555,4 @@ function Badge({ label }: { label: string }) {
 
 function modeButton(active: boolean) {
   return `rounded-xl px-4 py-3 text-sm font-semibold ${active ? "bg-[#0f2f3a] text-white" : "text-[#244661]"}`;
-}
-
-function parseCampaignCsv(value: string): CampaignRecipient[] {
-  const rows = value
-    .split(/\r?\n/)
-    .map((row) => row.trim())
-    .filter(Boolean);
-  if (rows.length < 2) return [];
-
-  const headers = rows[0].split(",").map((header) => header.trim().toLowerCase());
-  const nameIndex = findHeader(headers, ["fullname", "full_name", "name", "customername", "customer_name"]);
-  const idIndex = findHeader(headers, ["idnumber", "id_number", "said", "sa_id", "ricaid", "ficaid"]);
-  const phoneIndex = findHeader(headers, ["phonenumber", "phone_number", "phone", "msisdn", "mobile", "cell"]);
-  if (phoneIndex < 0) return [];
-
-  return rows
-    .slice(1)
-    .map((row) => row.split(",").map((cell) => cell.trim()))
-    .map((cells) => ({
-      fullName: nameIndex >= 0 ? cells[nameIndex] ?? "" : "",
-      idNumber: idIndex >= 0 ? cells[idIndex] ?? "" : "",
-      phoneNumber: cells[phoneIndex] ?? "",
-    }))
-    .filter((recipient) => recipient.phoneNumber.replace(/\D/g, "").length >= 9);
-}
-
-function findHeader(headers: string[], aliases: string[]) {
-  return headers.findIndex((header) => aliases.includes(header.replace(/[^a-z0-9]/g, "")));
 }

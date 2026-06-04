@@ -44,6 +44,17 @@ export type StaffInitiationPayload = {
   customerPhoneNumber: string;
   deliveryMethod: "whatsapp" | "qr";
   notes?: string;
+  applicant?: Partial<WhatsAppApplicant>;
+  bulkCampaign?: {
+    batchId: string;
+    batchReference: string;
+    rowNumber: number;
+    source: "upload" | "paste" | "sftp";
+    sourceFileName: string;
+    campaignId?: string;
+    segment?: string;
+    providerReference?: string;
+  };
 };
 
 export type WhatsAppApplicant = {
@@ -55,6 +66,7 @@ export type WhatsAppApplicant = {
 
 export type DeviceIntelligence = {
   browserFingerprint?: string;
+  ipAddress?: string;
   operatingSystem?: string;
   browser?: string;
   screenSize?: string;
@@ -132,9 +144,19 @@ export type WhatsAppKycCase = {
   };
   verification: {
     idValidation?: ReturnType<typeof validateSouthAfricanIdNumber>;
+    identityDocument?: {
+      documentType: string;
+      ocrConfidence: number;
+    };
     livenessScore?: number;
     faceMatchScore?: number;
     otp?: OtpRecord;
+    proofOfAddressDocument?: {
+      documentType: string;
+      fileName?: string;
+      accepted: boolean;
+      simulatedOcrScore: number;
+    };
     proofOfAddressProvided?: boolean;
     digitalAffidavitProvided?: boolean;
     locationShared?: boolean;
@@ -192,6 +214,8 @@ export function createWhatsAppCase(input: StaffInitiationPayload): WhatsAppKycCa
     channel: "WhatsApp",
     status: "consent_pending",
     applicant: {
+      fullName: input.applicant?.fullName,
+      idNumber: input.applicant?.idNumber,
       phoneNumber: normalizePhoneNumber(input.customerPhoneNumber),
     },
     staffInitiation: input,
@@ -211,6 +235,7 @@ export function createWhatsAppCase(input: StaffInitiationPayload): WhatsAppKycCa
       deliveryMethod: input.deliveryMethod,
       customerPhoneNumber: normalizePhoneNumber(input.customerPhoneNumber),
       staffRole: input.staffRole,
+      bulkCampaign: input.bulkCampaign,
     },
   });
 }

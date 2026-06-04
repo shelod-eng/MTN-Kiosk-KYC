@@ -16,7 +16,8 @@ export function SecureSessionClient({ kycCase, token }: SecureSessionClientProps
   const [locationMessage, setLocationMessage] = useState("Capture home GPS location for informal settlement support.");
   const [affidavitSaved, setAffidavitSaved] = useState(false);
   const [idUpload, setIdUpload] = useState<{ fileName: string; documentType: string; confidence: number } | null>(null);
-  const [proofUpload, setProofUpload] = useState<{ fileName: string } | null>(null);
+  const [proofDocumentType, setProofDocumentType] = useState("Bank statement");
+  const [proofUpload, setProofUpload] = useState<{ fileName: string; documentType: string } | null>(null);
   const [selfiePreview, setSelfiePreview] = useState<string | null>(sessionCase.documentUrls.selfie ?? null);
   const [selfieState, setSelfieState] = useState<"idle" | "camera" | "analyzing" | "captured" | "error">("idle");
   const [selfieMessage, setSelfieMessage] = useState("Open the front camera to complete liveness and face match.");
@@ -152,11 +153,12 @@ export function SecureSessionClient({ kycCase, token }: SecureSessionClientProps
         caseId: sessionCase.id,
         proofOfAddressUrl,
         fileName: file.name,
+        documentType: proofDocumentType,
       }),
     });
     const result = (await response.json()) as { case?: WhatsAppKycCase };
     if (result.case) setSessionCase(result.case);
-    setProofUpload({ fileName: file.name });
+    setProofUpload({ fileName: file.name, documentType: proofDocumentType });
   }
 
   async function completeChecks() {
@@ -332,16 +334,28 @@ export function SecureSessionClient({ kycCase, token }: SecureSessionClientProps
             title="4. Proof of address"
             body={
               proofUpload
-                ? `Proof of address stored from ${proofUpload.fileName}.`
+                ? `${proofUpload.documentType} stored from ${proofUpload.fileName}.`
                 : "Upload a bank statement, utility bill, municipal account, or service provider invoice."
             }
           >
-            <input
-              type="file"
-              accept="image/*,.pdf"
-              onChange={(event) => void uploadProofOfAddress(event.target.files?.[0] ?? null)}
-              className="mt-4 text-sm text-[#536b82]"
-            />
+            <div className="mt-4 grid gap-3">
+              <select
+                value={proofDocumentType}
+                onChange={(event) => setProofDocumentType(event.target.value)}
+                className="rounded-2xl border border-[#c8d6e3] px-4 py-3 text-sm outline-none focus:border-[#53718f]"
+              >
+                <option>Bank statement</option>
+                <option>Eskom or municipal electricity account</option>
+                <option>Water and rates account</option>
+                <option>Telkom or internet service provider invoice</option>
+              </select>
+              <input
+                type="file"
+                accept="image/*,.pdf"
+                onChange={(event) => void uploadProofOfAddress(event.target.files?.[0] ?? null)}
+                className="text-sm text-[#536b82]"
+              />
+            </div>
           </Panel>
           <Panel
             title="5. GPS and What3Words"
@@ -394,11 +408,19 @@ export function SecureSessionClient({ kycCase, token }: SecureSessionClientProps
                 ))}
               </div>
 
+              <div className="mt-5 grid gap-3 md:grid-cols-2">
+                <InfoCard label="GPS" value={verificationReport.evidence.locationDescription} />
+                <InfoCard label="IP address" value={verificationReport.evidence.ipAddress ?? "Not captured"} />
+                <InfoCard label="Device" value={verificationReport.evidence.deviceDescription} />
+                <InfoCard label="Proof document" value={verificationReport.evidence.proofOfAddressDocumentType ?? "Not captured"} />
+              </div>
+
               <div className="mt-5 rounded-2xl border border-[#d7e2ee] bg-[#f8fbfe] p-4">
                 <p className="text-xs uppercase tracking-[0.12em] text-[#8ba0b3]">Final decision</p>
                 <p className="mt-2 text-xl font-semibold text-[#17324a]">
                   {verificationReport.decision} {verificationReport.score !== null ? `(${verificationReport.score})` : ""}
                 </p>
+                <p className="mt-2 text-sm text-[#60778e]">Simulation score: {verificationReport.simulation.score}/100 ({verificationReport.simulation.band}).</p>
               </div>
             </section>
           )}

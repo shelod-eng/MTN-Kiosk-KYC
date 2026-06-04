@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { captureProofOfAddress } from "@/lib/whatsapp-store";
 
 export async function POST(request: NextRequest) {
-  const body = (await request.json()) as { caseId?: string; proofOfAddressUrl?: string; fileName?: string };
+  const body = (await request.json()) as { caseId?: string; proofOfAddressUrl?: string; fileName?: string; documentType?: string };
   if (!body.caseId || !body.proofOfAddressUrl) {
     return NextResponse.json({ error: "Missing caseId or proofOfAddressUrl." }, { status: 400 });
   }
@@ -10,6 +10,7 @@ export async function POST(request: NextRequest) {
   const updatedCase = await captureProofOfAddress(body.caseId, {
     proofOfAddressUrl: body.proofOfAddressUrl,
     fileName: body.fileName ?? "proof-of-address.pdf",
+    documentType: body.documentType,
   });
 
   if (!updatedCase) {

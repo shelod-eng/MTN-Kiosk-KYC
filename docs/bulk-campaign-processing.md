@@ -15,11 +15,13 @@ Network providers submit files of MSISDNs that are not yet RICA/FICA compliant. 
 
 ## Minimum CSV Columns
 
-- `msisdn` or `phoneNumber`
-- `fullName` when available
-- `idNumber` when available
+- `fullName`
+- `idNumber`
+- `phoneNumber` or `msisdn`
 - optional `campaignId`
 - optional `segment`
+
+The ingestion route normalizes South African mobile numbers to E.164 (`+27...`) and rejects rows where `idNumber` is not 13 digits. Full checksum and demographic validation continues in the downstream KYC details and risk stages.
 
 ## Batch Statuses
 
@@ -29,6 +31,22 @@ Network providers submit files of MSISDNs that are not yet RICA/FICA compliant. 
 - `completed`
 - `completed_with_exceptions`
 - `failed`
+
+## Implemented Demo Flow
+
+- Operators open the Bulk campaign CSV tab, choose MTN, Vodacom, or Cell C, paste/upload a CSV, and submit it.
+- `POST /api/whatsapp/bulk-campaigns` creates a batch reference and validates rows against the shared provider schema.
+- Each valid row creates one WhatsApp KYC case with status `consent_pending`, prefilled applicant details, and a secure session link.
+- Cases are stored through the same `kyc_cases` path as single WhatsApp cases; applicant snapshots are persisted to `kyc_applicants` when Supabase is configured.
+- Batch metadata and normalized rows are persisted to `kyc_bulk_batches` and `kyc_bulk_rows` for future scheduled provider intake.
+- The UI exposes a provider-style CSV report for the same data that will later be dropped back to provider SFTP.
+
+## Future SFTP Contract
+
+- Provider-specific SFTP jobs fetch daily files into the same CSV schema.
+- Each fetched file calls the same bulk ingestion service with `source = sftp` and the provider file name.
+- Provider references, campaign IDs, and segments travel with the batch row for reconciliation.
+- Final reports can be exported as CSV or JSON and pushed to the provider outbound SFTP folder.
 
 ## Provider Report
 
