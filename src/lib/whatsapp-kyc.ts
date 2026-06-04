@@ -4,6 +4,7 @@ import { validateSouthAfricanIdNumber } from "@/lib/sa-id";
 export type WhatsAppCaseStatus =
   | "initiated"
   | "consent_pending"
+  | "otp_approved"
   | "details_pending"
   | "selfie_pending"
   | "otp_pending"
@@ -27,6 +28,7 @@ export type TrustLayerResult = {
     | "proof_of_address"
     | "digital_affidavit"
     | "location"
+    | "tower_location"
     | "device"
     | "timestamp";
   label: string;
@@ -54,6 +56,8 @@ export type StaffInitiationPayload = {
     campaignId?: string;
     segment?: string;
     providerReference?: string;
+    towerId?: string;
+    locationEvidence?: string;
   };
 };
 
@@ -82,6 +86,7 @@ export type GeoCapture = {
   longitude: number;
   accuracy?: number;
   what3words?: string;
+  towerId?: string;
   capturedAt: string;
 };
 
@@ -90,7 +95,25 @@ export type AffidavitCapture = {
   address: string;
   declarationAccepted: boolean;
   responses: Array<{ question: string; answer: string }>;
+  affidavitText?: string;
+  aiValidationScore?: number;
+  aiExtractedAddress?: string;
+  aiReviewReason?: string;
   videoUrl?: string;
+  capturedAt: string;
+};
+
+export type ResidenceEvidence = {
+  source: "customer_capture" | "provider_batch";
+  gpsCoordinates?: {
+    latitude: number;
+    longitude: number;
+    accuracy?: number;
+  };
+  what3wordsId?: string;
+  towerId?: string;
+  locationEvidence?: string;
+  affidavitVideoUrl?: string;
   capturedAt: string;
 };
 
@@ -136,6 +159,7 @@ export type WhatsAppKycCase = {
   deviceIntelligence?: DeviceIntelligence;
   geoCapture?: GeoCapture;
   affidavit?: AffidavitCapture;
+  residenceEvidence?: ResidenceEvidence;
   documentUrls: {
     idDocument?: string;
     selfie?: string;
@@ -185,10 +209,11 @@ export type WhatsAppWebhookPayload = {
 
 const validTransitions: Partial<Record<WhatsAppCaseStatus, WhatsAppCaseStatus[]>> = {
   initiated: ["consent_pending"],
-  consent_pending: ["details_pending"],
+  consent_pending: ["otp_pending", "details_pending"],
+  otp_pending: ["otp_approved", "address_pending"],
+  otp_approved: ["details_pending"],
   details_pending: ["selfie_pending"],
-  selfie_pending: ["otp_pending"],
-  otp_pending: ["address_pending"],
+  selfie_pending: ["otp_pending", "address_pending"],
   address_pending: ["location_pending", "risk_review"],
   location_pending: ["risk_review"],
   risk_review: ["approved", "manual_review", "rejected"],
@@ -206,6 +231,10 @@ export function createWhatsAppCase(input: StaffInitiationPayload): WhatsAppKycCa
   const now = new Date().toISOString();
   const id = `WA-CASE-${cryptoRandomToken(8).toUpperCase()}`;
   const reference = createReference("WA");
+  const providerResidenceEvidence =
+    input.bulkCampaign?.towerId || input.bulkCampaign?.locationEvidence
+      ? buildProviderResidenceEvidence(input.bulkCampaign.towerId, input.bulkCampaign.locationEvidence, now)
+      : undefined;
 
   const initialCase: WhatsAppKycCase = {
     id,
@@ -219,8 +248,11 @@ export function createWhatsAppCase(input: StaffInitiationPayload): WhatsAppKycCa
       phoneNumber: normalizePhoneNumber(input.customerPhoneNumber),
     },
     staffInitiation: input,
+    residenceEvidence: providerResidenceEvidence,
     documentUrls: {},
-    verification: {},
+    verification: {
+      locationShared: Boolean(providerResidenceEvidence?.gpsCoordinates),
+    },
     auditTrail: [],
     createdAt: now,
     updatedAt: now,
@@ -236,6 +268,7 @@ export function createWhatsAppCase(input: StaffInitiationPayload): WhatsAppKycCa
       customerPhoneNumber: normalizePhoneNumber(input.customerPhoneNumber),
       staffRole: input.staffRole,
       bulkCampaign: input.bulkCampaign,
+      residenceEvidence: providerResidenceEvidence,
     },
   });
 }
@@ -264,7 +297,7 @@ export function applyWebhookEvent(kycCase: WhatsAppKycCase, payload: WhatsAppWeb
     nextCase.verification.livenessScore = Number(payload.details?.livenessScore ?? nextCase.verification.livenessScore ?? 0);
     nextCase.verification.faceMatchScore = Number(payload.details?.faceMatchScore ?? nextCase.verification.faceMatchScore ?? 0);
     nextCase.documentUrls.selfie = String(payload.details?.selfieUrl ?? nextCase.documentUrls.selfie ?? "");
-    nextCase.status = "otp_pending";
+    nextCase.status = nextCase.verification.otp?.status === "verified" ? "address_pending" : "otp_pending";
   }
 
   if (payload.event === "otp_sent") {
@@ -332,7 +365,12 @@ export function calculateRiskAssessment(kycCase: WhatsAppKycCase): RiskAssessmen
   const livenessScore = kycCase.verification.livenessScore ?? 0;
   const faceMatchScore = kycCase.verification.faceMatchScore ?? 0;
   const proofSupported = Boolean(kycCase.verification.proofOfAddressProvided || kycCase.verification.digitalAffidavitProvided);
-  const locationShared = Boolean(kycCase.verification.locationShared);
+  const towerId = kycCase.residenceEvidence?.towerId ?? kycCase.staffInitiation.bulkCampaign?.towerId;
+  const locationEvidence = kycCase.residenceEvidence?.locationEvidence ?? kycCase.staffInitiation.bulkCampaign?.locationEvidence;
+  const hasProviderGps = Boolean(kycCase.residenceEvidence?.gpsCoordinates && kycCase.residenceEvidence.source === "provider_batch");
+  const towerLocationAvailable = Boolean(towerId);
+  const locationShared = Boolean(kycCase.verification.locationShared || hasProviderGps);
+  const affidavitAndLocation = Boolean(kycCase.verification.digitalAffidavitProvided && (locationShared || towerLocationAvailable));
   const deviceLinked = Boolean(kycCase.deviceIntelligence?.browserFingerprint);
 
   const layers: TrustLayerResult[] = [
@@ -342,7 +380,19 @@ export function calculateRiskAssessment(kycCase: WhatsAppKycCase): RiskAssessmen
     weightedLayer("liveness", "Liveness detection", Math.round(livenessScore * 100), 0.16, livenessScore >= 0.8 ? "pass" : livenessScore >= 0.65 ? "review" : "fail", `Liveness score ${livenessScore.toFixed(2)}.`),
     weightedLayer("face_match", "Face match", Math.round(faceMatchScore * 100), 0.14, faceMatchScore >= 0.82 ? "pass" : faceMatchScore >= 0.7 ? "review" : "fail", `Face match score ${faceMatchScore.toFixed(2)}.`),
     weightedLayer("proof_of_address", "Proof of address or affidavit", proofSupported ? 100 : 35, 0.12, proofSupported ? "pass" : "review", proofSupported ? "Address evidence is present." : "Proof of address or affidavit is still required."),
-    weightedLayer("location", "Location and timestamp", locationShared ? 100 : 40, 0.12, locationShared ? "pass" : "review", locationShared ? "GPS location captured." : "Location has not been shared."),
+    weightedLayer("location", "GPS location and timestamp", locationShared ? 100 : towerLocationAvailable ? 70 : 40, 0.09, locationShared ? "pass" : towerLocationAvailable ? "review" : "missing", locationShared ? "GPS location captured." : towerLocationAvailable ? "Provider tower location is available, but customer GPS is still preferred." : "Location has not been shared."),
+    weightedLayer(
+      "tower_location",
+      "Provider tower residence zone",
+      towerLocationAvailable ? 82 : locationShared ? 100 : 45,
+      0.03,
+      towerLocationAvailable ? "review" : locationShared ? "pass" : "missing",
+      towerLocationAvailable
+        ? `Provider supplied tower ${towerId}${locationEvidence ? ` with ${locationEvidence}` : ""}.`
+        : locationShared
+          ? "Customer GPS is the primary residence signal."
+          : "No provider tower residence zone supplied."
+    ),
     weightedLayer("device", "Device intelligence", deviceLinked ? 100 : 45, 0.1, deviceLinked ? "pass" : "review", deviceLinked ? "Device intelligence linked to secure session." : "Device fingerprint has not been captured."),
   ];
 
@@ -356,7 +406,11 @@ export function calculateRiskAssessment(kycCase: WhatsAppKycCase): RiskAssessmen
   const anyFail = layers.some((layer) => layer.status === "fail");
   const anyReview = layers.some((layer) => layer.status === "review" || layer.status === "missing");
 
-  if (score < 55 || anyFail) {
+  if (affidavitAndLocation && !anyFail && score >= 78) {
+    band = "low";
+    decision = "APPROVE";
+    status = "approved";
+  } else if (score < 55 || anyFail) {
     band = "high";
     decision = "REJECT";
     status = "rejected";
@@ -454,6 +508,10 @@ export function summarizeCaseForReview(kycCase: WhatsAppKycCase) {
       digitalAffidavitProvided: Boolean(kycCase.verification.digitalAffidavitProvided),
       locationShared: Boolean(kycCase.verification.locationShared),
       what3words: kycCase.geoCapture?.what3words ?? null,
+      gpsCoordinates: kycCase.residenceEvidence?.gpsCoordinates ?? null,
+      towerId: kycCase.residenceEvidence?.towerId ?? kycCase.staffInitiation.bulkCampaign?.towerId ?? null,
+      locationEvidence: kycCase.residenceEvidence?.locationEvidence ?? kycCase.staffInitiation.bulkCampaign?.locationEvidence ?? null,
+      affidavitVideoUrl: kycCase.residenceEvidence?.affidavitVideoUrl ?? kycCase.documentUrls.affidavitVideo ?? null,
     },
     risk: kycCase.risk ?? null,
     missingItems: buildMissingItems(kycCase),
@@ -553,8 +611,29 @@ function buildMissingItems(kycCase: WhatsAppKycCase) {
   if (!kycCase.verification.livenessScore) missing.push("liveness");
   if (kycCase.verification.otp?.status !== "verified") missing.push("otp_verification");
   if (!kycCase.verification.proofOfAddressProvided && !kycCase.verification.digitalAffidavitProvided) missing.push("address_or_affidavit");
-  if (!kycCase.verification.locationShared) missing.push("location");
+  if (!kycCase.verification.locationShared && !kycCase.residenceEvidence?.gpsCoordinates && !kycCase.residenceEvidence?.towerId) {
+    missing.push("location");
+  }
   return missing;
+}
+
+function buildProviderResidenceEvidence(towerId: string | undefined, locationEvidence: string | undefined, capturedAt: string): ResidenceEvidence {
+  return {
+    source: "provider_batch",
+    towerId,
+    locationEvidence,
+    gpsCoordinates: parseGpsEvidence(locationEvidence),
+    capturedAt,
+  };
+}
+
+function parseGpsEvidence(value?: string) {
+  const match = value?.match(/GPS:\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)/i);
+  if (!match) return undefined;
+  return {
+    latitude: Number(match[1]),
+    longitude: Number(match[2]),
+  };
 }
 
 function signSessionPayload(payload: Record<string, unknown>) {

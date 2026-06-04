@@ -48,7 +48,9 @@ export function StoreJourneySimulator() {
     idNumber: "9201055800087",
     phoneNumber: "+27785929455",
   });
-  const [campaignCsv, setCampaignCsv] = useState("fullName,idNumber,phoneNumber\nNomsa Dlamini,8801015800082,+27821234567\nThabo Molefe,9002025800088,+27731234567");
+  const [campaignCsv, setCampaignCsv] = useState(
+    'fullName,idNumber,phoneNumber,towerId,locationEvidence\nNomsa Dlamini,8801015800082,+27821234567,MTN_TWR_045,"GPS:-26.2041,28.0473"\nThabo Molefe,9002025800088,+27731234567,VOD_TWR_112,"Affidavit: Informal Settlement Zone 7"\nAyanda Khumalo,9503035800089,+27611234567,CELL_TWR_221,"GPS:-26.3456,28.1234"'
+  );
   const [campaignFileName, setCampaignFileName] = useState("provider-daily-rica-file.csv");
   const [caseItem, setCaseItem] = useState<WhatsAppKycCase | null>(null);
   const [campaignCases, setCampaignCases] = useState<WhatsAppKycCase[]>([]);
@@ -456,6 +458,11 @@ export function StoreJourneySimulator() {
                       <p className="font-semibold text-[#17324a]">{kycCase.reference}</p>
                       <p>{kycCase.tenant} WhatsApp KYC sent to {kycCase.applicant.phoneNumber}</p>
                       <p className="mt-1 text-[#667d93]">Status: {kycCase.status}</p>
+                      {(kycCase.residenceEvidence?.towerId || kycCase.residenceEvidence?.locationEvidence) && (
+                        <p className="mt-1 text-[#667d93]">
+                          Residence evidence: {kycCase.residenceEvidence?.towerId ?? "no tower"} / {kycCase.residenceEvidence?.locationEvidence ?? "no provider evidence"}
+                        </p>
+                      )}
                       {kycCase.secureSessionToken && (
                         <Link href={`/verify/${kycCase.secureSessionToken}`} className="mt-2 inline-block font-medium text-[#1f4b6d] underline">
                           Open secure KYC link
@@ -466,7 +473,7 @@ export function StoreJourneySimulator() {
                 </div>
               ) : (
                 <p className="text-sm leading-6 text-[#667d93]">
-                  Bulk campaigns only send WhatsApp KYC links to unregistered MSISDNs. Each customer completes consent, identity, selfie, OTP, address, location, and risk scoring in their own secure session.
+                  Bulk campaigns accept fullName, idNumber, phoneNumber, and optional towerId/locationEvidence. If residence evidence is missing, each customer completes affidavit and GPS capture in their secure session.
                 </p>
               )}
             </Panel>

@@ -13,7 +13,7 @@ export async function POST(request: NextRequest, context: RouteContext) {
     return NextResponse.json({ error: "Session not found or expired." }, { status: 404 });
   }
 
-  const body = (await request.json()) as { latitude?: number; longitude?: number; accuracy?: number };
+  const body = (await request.json()) as { latitude?: number; longitude?: number; accuracy?: number; towerId?: string };
   if (body.latitude === undefined || body.longitude === undefined) {
     return NextResponse.json({ error: "Missing coordinates." }, { status: 400 });
   }
@@ -29,6 +29,7 @@ export async function POST(request: NextRequest, context: RouteContext) {
     accuracy: body.accuracy,
     what3words,
     capturedAt: new Date().toISOString(),
+    towerId: body.towerId ?? inferNearestTower(kycCase.tenant, body.latitude, body.longitude),
   });
 
   return NextResponse.json({
@@ -36,5 +37,13 @@ export async function POST(request: NextRequest, context: RouteContext) {
     case: updatedCase,
     what3words,
     location: updatedCase?.geoCapture,
+    towerId: updatedCase?.residenceEvidence?.towerId,
   });
+}
+
+function inferNearestTower(provider: string, latitude: number, longitude: number) {
+  const providerCode = provider.replace(/\s/g, "").toUpperCase().slice(0, 4);
+  const lat = Math.abs(Math.round(latitude * 1000));
+  const lon = Math.abs(Math.round(longitude * 1000));
+  return `${providerCode}_TWR_${String((lat + lon) % 997).padStart(3, "0")}`;
 }

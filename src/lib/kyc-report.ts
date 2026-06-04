@@ -39,9 +39,9 @@ export function buildVerificationReport(kycCase: WhatsAppKycCase) {
       detail: kycCase.verification.proofOfAddressProvided
         ? `${proofDocumentType ?? "Proof of address"} captured; accepted document ${proofDocument?.accepted ? "yes" : "needs review"}; simulated OCR score ${addressOcrScore}%.`
         : kycCase.verification.digitalAffidavitProvided
-          ? "Digital affidavit fallback captured."
+          ? `Digital affidavit fallback captured${kycCase.affidavit?.aiValidationScore ? ` with AI validation ${Math.round(kycCase.affidavit.aiValidationScore * 100)}%` : ""}.`
           : "Proof of address or affidavit is still required.",
-      score: kycCase.verification.digitalAffidavitProvided ? 76 : addressOcrScore,
+      score: kycCase.verification.digitalAffidavitProvided ? Math.round((kycCase.affidavit?.aiValidationScore ?? 0.76) * 100) : addressOcrScore,
     },
     {
       name: "GPS, IP, and device location evidence",
@@ -99,6 +99,7 @@ export function buildVerificationReport(kycCase: WhatsAppKycCase) {
       locationDescription: kycCase.geoCapture
         ? `${kycCase.geoCapture.latitude}, ${kycCase.geoCapture.longitude}${kycCase.geoCapture.what3words ? ` (${kycCase.geoCapture.what3words})` : ""}`
         : "Not captured",
+      towerId: kycCase.residenceEvidence?.towerId ?? kycCase.geoCapture?.towerId ?? null,
       ipAddress: kycCase.deviceIntelligence?.ipAddress ?? null,
       deviceDescription: kycCase.deviceIntelligence
         ? `${kycCase.deviceIntelligence.browser || "Browser"} / ${kycCase.deviceIntelligence.screenSize || "screen unknown"} / ${kycCase.deviceIntelligence.timezone || "timezone unknown"}`
@@ -116,7 +117,7 @@ export function buildVerificationReport(kycCase: WhatsAppKycCase) {
 }
 
 export function verificationReportToCsv(report: ReturnType<typeof buildVerificationReport>) {
-  const header = "reference,tenant,applicant,status,check,checkStatus,checkScore,detail,gps,ipAddress,device,proofDocument,simulationScore,simulationBand,decision,riskScore,generatedAt";
+  const header = "reference,tenant,applicant,status,check,checkStatus,checkScore,detail,gps,towerId,ipAddress,device,proofDocument,simulationScore,simulationBand,decision,riskScore,generatedAt";
   const rows = report.checks.map((check) =>
     [
       report.reference,
@@ -128,6 +129,7 @@ export function verificationReportToCsv(report: ReturnType<typeof buildVerificat
       check.score,
       check.detail,
       report.evidence.locationDescription,
+      report.evidence.towerId ?? "",
       report.evidence.ipAddress ?? "",
       report.evidence.deviceDescription,
       report.evidence.proofOfAddressDocumentType ?? "",

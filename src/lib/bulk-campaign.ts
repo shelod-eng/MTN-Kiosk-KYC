@@ -19,6 +19,8 @@ export type BulkCampaignRow = {
   campaignId?: string;
   segment?: string;
   providerReference?: string;
+  towerId?: string;
+  locationEvidence?: string;
 };
 
 export type BulkCampaignError = {
@@ -84,6 +86,8 @@ export async function ingestBulkCampaign(input: BulkCampaignInput): Promise<Bulk
         campaignId: row.campaignId,
         segment: row.segment,
         providerReference: row.providerReference,
+        towerId: row.towerId,
+        locationEvidence: row.locationEvidence,
       },
     });
     await createCaseSession(kycCase.id);
@@ -130,6 +134,8 @@ export function parseCsv(value: string): ParsedCsv {
     campaignId: findHeader(headers, ["campaignid", "campaign_id"]),
     segment: findHeader(headers, ["segment"]),
     providerReference: findHeader(headers, ["providerreference", "provider_reference", "reference"]),
+    towerId: findHeader(headers, ["towerid", "tower_id", "celltowerid", "cell_tower_id"]),
+    locationEvidence: findHeader(headers, ["locationevidence", "location_evidence", "residenceevidence", "residence_evidence"]),
   };
 
   for (const header of requiredHeaders) {
@@ -151,6 +157,8 @@ export function parseCsv(value: string): ParsedCsv {
         campaignId: optionalCell(row, headerIndexes.campaignId),
         segment: optionalCell(row, headerIndexes.segment),
         providerReference: optionalCell(row, headerIndexes.providerReference),
+        towerId: optionalCell(row, headerIndexes.towerId),
+        locationEvidence: optionalCell(row, headerIndexes.locationEvidence),
       })),
     errors,
   };
@@ -180,6 +188,8 @@ function normalizeCampaignRow(row: Record<string, string>, rowNumber: number): B
     campaignId: row.campaignId || undefined,
     segment: row.segment || undefined,
     providerReference: row.providerReference || undefined,
+    towerId: row.towerId || undefined,
+    locationEvidence: row.locationEvidence || undefined,
   };
 }
 
@@ -245,6 +255,8 @@ function buildProviderReport(
     "riskScore",
     "missingItems",
     "completedChecks",
+    "towerId",
+    "locationEvidence",
     "generatedAt",
   ];
   const generatedAt = new Date().toISOString();
@@ -260,6 +272,8 @@ function buildProviderReport(
       kycCase.risk?.score ?? "",
       missingItems(kycCase).join("|"),
       completedChecks(kycCase).join("|"),
+      kycCase.residenceEvidence?.towerId ?? kycCase.staffInitiation.bulkCampaign?.towerId ?? "",
+      kycCase.residenceEvidence?.locationEvidence ?? kycCase.staffInitiation.bulkCampaign?.locationEvidence ?? "",
       generatedAt,
     ].map(escapeCsvCell)
   );
@@ -275,6 +289,8 @@ function buildProviderReport(
       "",
       error.message,
       "",
+      "",
+      "",
       generatedAt,
     ].map(escapeCsvCell)
   );
@@ -283,23 +299,29 @@ function buildProviderReport(
 }
 
 function completedChecks(kycCase: WhatsAppKycCase) {
+  const hasLocationEvidence = Boolean(
+    kycCase.verification.locationShared || kycCase.residenceEvidence?.gpsCoordinates || kycCase.residenceEvidence?.towerId
+  );
   return [
     kycCase.applicant.consentGiven ? "consent" : "",
     kycCase.applicant.fullName ? "details" : "",
     kycCase.verification.otp?.status === "verified" ? "otp" : "",
     kycCase.verification.livenessScore ? "liveness" : "",
     kycCase.verification.proofOfAddressProvided || kycCase.verification.digitalAffidavitProvided ? "address" : "",
-    kycCase.verification.locationShared ? "location" : "",
+    hasLocationEvidence ? "location" : "",
   ].filter(Boolean);
 }
 
 function missingItems(kycCase: WhatsAppKycCase) {
+  const hasLocationEvidence = Boolean(
+    kycCase.verification.locationShared || kycCase.residenceEvidence?.gpsCoordinates || kycCase.residenceEvidence?.towerId
+  );
   return [
     kycCase.applicant.consentGiven ? "" : "consent",
     kycCase.verification.otp?.status === "verified" ? "" : "otp",
     kycCase.verification.livenessScore ? "" : "liveness",
     kycCase.verification.proofOfAddressProvided || kycCase.verification.digitalAffidavitProvided ? "" : "address_or_affidavit",
-    kycCase.verification.locationShared ? "" : "location",
+    hasLocationEvidence ? "" : "location",
   ].filter(Boolean);
 }
 

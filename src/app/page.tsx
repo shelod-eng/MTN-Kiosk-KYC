@@ -1,5 +1,5 @@
-import { StoreJourneySimulator } from "@/components/store-journey-simulator";
+import { WhatsAppKycChatDemo } from "@/components/whatsapp-kyc-chat-demo";
 
 export default function Home() {
-  return <StoreJourneySimulator />;
+  return <WhatsAppKycChatDemo />;
 }

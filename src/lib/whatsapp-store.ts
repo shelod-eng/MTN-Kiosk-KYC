@@ -74,6 +74,12 @@ async function persistCase(kycCase: WhatsAppKycCase) {
         risk_score: kycCase.risk?.score ?? null,
         risk_band: kycCase.risk?.band ?? null,
         decision: kycCase.risk?.decision ?? null,
+        gps_coordinates: kycCase.residenceEvidence?.gpsCoordinates ?? null,
+        what3words_id: kycCase.residenceEvidence?.what3wordsId ?? kycCase.geoCapture?.what3words ?? null,
+        tower_id: kycCase.residenceEvidence?.towerId ?? kycCase.staffInitiation.bulkCampaign?.towerId ?? null,
+        location_evidence: kycCase.residenceEvidence?.locationEvidence ?? kycCase.staffInitiation.bulkCampaign?.locationEvidence ?? null,
+        affidavit_video_url: kycCase.residenceEvidence?.affidavitVideoUrl ?? kycCase.documentUrls.affidavitVideo ?? null,
+        residence_evidence_captured_at: kycCase.residenceEvidence?.capturedAt ?? kycCase.geoCapture?.capturedAt ?? kycCase.affidavit?.capturedAt ?? null,
         updated_at: kycCase.updatedAt,
         case_payload: kycCase,
       },
@@ -192,6 +198,8 @@ export async function persistBulkBatch(result: BulkCampaignResult, rows: BulkCam
             campaign_id: row.campaignId ?? null,
             segment: row.segment ?? null,
             provider_reference: row.providerReference ?? null,
+            tower_id: row.towerId ?? null,
+            location_evidence: row.locationEvidence ?? null,
             case_id: kycCase?.id ?? null,
             status: kycCase ? "created" : "failed",
             error_message: null,
@@ -290,6 +298,18 @@ export async function captureLocation(caseId: string, payload: GeoCapture) {
     ...current,
     status: current.status === "location_pending" || (current.status === "address_pending" && hasAddressEvidence) ? "risk_review" : current.status,
     geoCapture: payload,
+    residenceEvidence: {
+      ...current.residenceEvidence,
+      source: "customer_capture" as const,
+      gpsCoordinates: {
+        latitude: payload.latitude,
+        longitude: payload.longitude,
+        accuracy: payload.accuracy,
+      },
+      what3wordsId: payload.what3words,
+      towerId: payload.towerId ?? current.residenceEvidence?.towerId,
+      capturedAt: payload.capturedAt,
+    },
     verification: {
       ...current.verification,
       locationShared: true,
@@ -312,6 +332,12 @@ export async function captureAffidavit(caseId: string, payload: AffidavitCapture
     ...current,
     status: nextStatus,
     affidavit: payload,
+    residenceEvidence: {
+      ...current.residenceEvidence,
+      source: current.residenceEvidence?.source ?? ("customer_capture" as const),
+      affidavitVideoUrl: payload.videoUrl,
+      capturedAt: payload.capturedAt,
+    },
     verification: {
       ...current.verification,
       digitalAffidavitProvided: true,
@@ -412,12 +438,16 @@ export async function upsertOtp(caseId: string, mode: "send" | "verify", attempt
   const hasAddressEvidence = Boolean(current.verification.proofOfAddressProvided || current.verification.digitalAffidavitProvided);
   const nextStatus =
     mode === "verify"
-      ? hasAddressEvidence
+      ? current.status === "otp_pending" && !current.applicant.fullName
+        ? "otp_approved"
+        : hasAddressEvidence
         ? current.verification.locationShared
           ? "risk_review"
           : "location_pending"
         : "address_pending"
-      : current.status;
+      : current.status === "consent_pending"
+        ? "otp_pending"
+        : current.status;
   const nextCase = {
     ...current,
     status: nextStatus,

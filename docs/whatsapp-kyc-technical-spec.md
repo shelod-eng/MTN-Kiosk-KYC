@@ -6,7 +6,7 @@ This prototype extends the existing KYC demo into a WhatsApp-first onboarding fl
 
 - staff-triggered case initiation
 - consent and minimal personal data capture
-- secure web-session handoff
+- single-screen WhatsApp-style customer journey
 - selfie/liveness and device/location capture scaffolding
 - OTP and affidavit APIs
 - weighted trust-layer risk scoring
@@ -20,13 +20,15 @@ This prototype extends the existing KYC demo into a WhatsApp-first onboarding fl
 
 ## Case lifecycle
 
-1. Staff initiates a WhatsApp case and selects delivery method (`whatsapp` or `qr`).
-2. Customer receives the WhatsApp trigger and submits consent.
-3. Customer provides full name, SA ID number, and phone number.
-4. Customer is redirected into a secure web session for selfie, device, and GPS capture.
-5. OTP is sent and verified before final approval.
-6. Customer provides proof of address or completes a fallback digital affidavit with video.
-7. Risk engine evaluates the trust layers and returns `approved`, `manual_review`, or `rejected`.
+1. MNO supplies a single MSISDN or a bulk file row.
+2. KYC-Now sends WhatsApp OTP to the verified MSISDN.
+3. Customer enters OTP and case moves from `consent_pending` to `otp_approved`.
+4. Customer replies `START KYC` / consent in the same WhatsApp screen.
+5. Customer provides full name and SA ID number. The MSISDN is not requested again.
+6. Customer attaches ID document for OCR, captures selfie/liveness, and records device/GPS/IP evidence.
+7. Customer uploads proof of address or submits free-text/scanned affidavit. No dropdown is required.
+8. AI affidavit reader validates the affidavit text as proof-of-address fallback.
+9. Risk engine evaluates the consolidated checks and returns an inline WhatsApp verification report with CSV export.
 
 ## Trust layers
 
@@ -40,6 +42,7 @@ The current implementation uses weighted layer scoring:
 - proof of address or digital affidavit
 - GPS location and timestamp
 - device intelligence
+- provider tower residence zone where supplied by MNO batch files
 
 ## API surface implemented in prototype
 
@@ -58,6 +61,7 @@ The current implementation uses weighted layer scoring:
 - `POST /api/whatsapp/location/resolve`
 - `POST /api/whatsapp/affidavit`
 - `POST /api/whatsapp/risk-score`
+- `POST /api/whatsapp/verification`
 
 ## Production follow-up
 
