@@ -216,6 +216,10 @@ export async function getCase(caseId: string) {
   return loadCase(caseId);
 }
 
+export async function saveCaseSnapshot(kycCase: WhatsAppKycCase) {
+  return persistCase(kycCase);
+}
+
 export async function updateFromWebhook(payload: WhatsAppWebhookPayload) {
   const current = await loadCase(payload.caseId);
   if (!current) return null;

@@ -141,9 +141,13 @@ export function WhatsAppKycChatDemo() {
     const otpResponse = await fetch("/api/whatsapp/otp/send", {
       method: "POST",
       headers: staffHeaders,
-      body: JSON.stringify({ caseId: nextCase.id }),
+      body: JSON.stringify({ caseId: nextCase.id, caseSnapshot: nextCase }),
     });
     const otpPayload = (await otpResponse.json()) as { status?: string; error?: string };
+    if (!otpResponse.ok) {
+      addMessage("platform", otpPayload.error ?? "Could not dispatch OTP for this queued MSISDN.");
+      return;
+    }
     const otpCase = { ...nextCase, status: (otpPayload.status as WhatsAppKycCase["status"]) ?? "otp_pending" };
     applyCaseUpdate(otpCase);
     setStep("otp");
@@ -723,7 +727,11 @@ export function WhatsAppKycChatDemo() {
           <footer className="border-t border-[#d1d8d4] bg-[#f0f2f5] p-3">
             <div className="mx-auto flex max-w-3xl flex-wrap items-center gap-2">
               {step === "seed" && (
-                intakeMode === "single" ? (
+                caseItem ? (
+                  <button type="button" onClick={() => void sendOtpForCase(caseItem, `${caseItem.tenant} queued case ${caseItem.reference} is ready for WhatsApp dispatch.`)} className="rounded-full bg-[#25d366] px-4 py-2 text-sm font-bold text-[#063b34]" disabled={busy}>
+                    Dispatch OTP to {caseItem.applicant.phoneNumber ?? caseItem.staffInitiation.customerPhoneNumber}
+                  </button>
+                ) : intakeMode === "single" ? (
                   <button type="button" onClick={() => void seedMsisdnAndSendOtp()} className="rounded-full bg-[#25d366] px-4 py-2 text-sm font-bold text-[#063b34]">
                     Send OTP to {singleMsisdn || "single MSISDN"}
                   </button>

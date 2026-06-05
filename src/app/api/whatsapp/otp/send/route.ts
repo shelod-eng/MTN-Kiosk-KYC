@@ -1,15 +1,23 @@
 import { NextRequest, NextResponse } from "next/server";
 import { sendOtpWithProvider } from "@/lib/provider-adapters";
-import { upsertOtp } from "@/lib/whatsapp-store";
-import { getCase } from "@/lib/whatsapp-store";
+import { getCase, saveCaseSnapshot, upsertOtp } from "@/lib/whatsapp-store";
+import type { WhatsAppKycCase } from "@/lib/whatsapp-kyc";
 
 export async function POST(request: NextRequest) {
-  const body = (await request.json()) as { caseId?: string; provider?: "twilio-verify" | "netcash" };
+  const body = (await request.json()) as {
+    caseId?: string;
+    provider?: "twilio-verify" | "netcash";
+    caseSnapshot?: WhatsAppKycCase;
+  };
   if (!body.caseId) {
     return NextResponse.json({ error: "Missing caseId." }, { status: 400 });
   }
 
-  const current = await getCase(body.caseId);
+  let current = await getCase(body.caseId);
+  if (!current && body.caseSnapshot?.id === body.caseId) {
+    current = await saveCaseSnapshot(body.caseSnapshot);
+  }
+
   if (!current) {
     return NextResponse.json({ error: "Case not found." }, { status: 404 });
   }
