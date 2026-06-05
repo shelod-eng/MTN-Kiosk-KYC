@@ -11,6 +11,7 @@ const staffHeaders = {
 };
 
 type NetworkProvider = "MTN" | "Vodacom" | "Cell C";
+type IntakeMode = "single" | "bulk";
 type ChatStep = "seed" | "otp" | "start" | "fullName" | "idNumber" | "idDocument" | "selfie" | "address" | "verification" | "complete";
 type Message = {
   id: string;
@@ -32,6 +33,18 @@ type VerificationReport = {
   };
   checks: Array<{ name: string; status: "DONE" | "PENDING" | "REVIEW"; score: number; detail: string }>;
 };
+type BulkCampaignBatch = {
+  batchId: string;
+  batchReference: string;
+  provider: NetworkProvider;
+  status: string;
+  rowCount: number;
+  validCount: number;
+  errorCount: number;
+  cases: WhatsAppKycCase[];
+  errors: Array<{ rowNumber: number; message: string }>;
+  providerReport: string;
+};
 
 const sampleCustomer = {
   phoneNumber: "+27785929455",
@@ -40,11 +53,20 @@ const sampleCustomer = {
   affidavit:
     "I declare that I reside at Informal Settlement Zone 7, Stand 42, Ivory Park. I do not have a municipal utility bill and confirm this is my home address.",
 };
+const sampleBulkCsv =
+  "phoneNumber\n+27821234567\n+27731234567\n+27611234567";
 
 export function WhatsAppKycChatDemo() {
+  const [intakeMode, setIntakeMode] = useState<IntakeMode>("single");
   const [provider, setProvider] = useState<NetworkProvider>("MTN");
   const [step, setStep] = useState<ChatStep>("seed");
   const [caseItem, setCaseItem] = useState<WhatsAppKycCase | null>(null);
+  const [singleMsisdn, setSingleMsisdn] = useState(sampleCustomer.phoneNumber);
+  const [bulkCsv, setBulkCsv] = useState(sampleBulkCsv);
+  const [bulkFileName, setBulkFileName] = useState("mno-msisdn-batch.csv");
+  const [batch, setBatch] = useState<BulkCampaignBatch | null>(null);
+  const [queueCases, setQueueCases] = useState<WhatsAppKycCase[]>([]);
+  const [queueMessage, setQueueMessage] = useState("No batch loaded yet.");
   const [fullName, setFullName] = useState(sampleCustomer.fullName);
   const [idNumber, setIdNumber] = useState(sampleCustomer.idNumber);
   const [inputValue, setInputValue] = useState("");
@@ -92,17 +114,53 @@ export function WhatsAppKycChatDemo() {
     setMessages((current) => [...current, makeMessage(sender, text)]);
   }
 
+  function resetCurrentFlow(nextProvider = provider, openingMessage = "Ready for the next MSISDN. Choose single or bulk intake to begin.") {
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+    streamRef.current = null;
+    setProvider(nextProvider);
+    setStep("seed");
+    setCaseItem(null);
+    setFullName(sampleCustomer.fullName);
+    setIdNumber(sampleCustomer.idNumber);
+    setInputValue("");
+    setSelfieState("idle");
+    setSelfiePreview(null);
+    setReport(null);
+    setReportCsv("");
+    setReportOpen(true);
+    setMessages([platformMessage(openingMessage)]);
+  }
+
+  function applyCaseUpdate(nextCase: WhatsAppKycCase) {
+    setCaseItem(nextCase);
+    setQueueCases((current) => current.map((candidate) => (candidate.id === nextCase.id ? nextCase : candidate)));
+  }
+
+  async function sendOtpForCase(nextCase: WhatsAppKycCase, sourceText: string) {
+    addMessage("platform", sourceText);
+    const otpResponse = await fetch("/api/whatsapp/otp/send", {
+      method: "POST",
+      headers: staffHeaders,
+      body: JSON.stringify({ caseId: nextCase.id }),
+    });
+    const otpPayload = (await otpResponse.json()) as { status?: string; error?: string };
+    const otpCase = { ...nextCase, status: (otpPayload.status as WhatsAppKycCase["status"]) ?? "otp_pending" };
+    applyCaseUpdate(otpCase);
+    setStep("otp");
+    addMessage("platform", `Your ${nextCase.tenant} KYC-Now OTP is 123456. Enter it here to verify this WhatsApp number.`);
+  }
+
   async function seedMsisdnAndSendOtp() {
     await run(async () => {
-      addMessage("platform", `${provider} supplied MSISDN ${sampleCustomer.phoneNumber} from a mocked batch file.`);
+      const normalizedMsisdn = singleMsisdn.trim();
       const initiateResponse = await fetch("/api/whatsapp/staff/initiate", {
         method: "POST",
         headers: staffHeaders,
         body: JSON.stringify({
           tenant: provider,
-          customerPhoneNumber: sampleCustomer.phoneNumber,
+          customerPhoneNumber: normalizedMsisdn,
           deliveryMethod: "whatsapp",
-          notes: "Mocked single MSISDN from MNO batch for WhatsApp KYC renewal flow",
+          notes: "Single MSISDN intake for WhatsApp KYC renewal flow",
         }),
       });
       const initiatePayload = (await initiateResponse.json()) as { case?: WhatsAppKycCase; error?: string };
@@ -110,16 +168,54 @@ export function WhatsAppKycChatDemo() {
         addMessage("platform", initiatePayload.error ?? "Could not create the WhatsApp KYC case.");
         return;
       }
+      await sendOtpForCase(initiatePayload.case, `${provider} supplied single MSISDN ${normalizedMsisdn}.`);
+    });
+  }
 
-      const otpResponse = await fetch("/api/whatsapp/otp/send", {
+  async function ingestBulkBatch() {
+    await run(async () => {
+      setQueueMessage("Ingesting bulk MSISDN file...");
+      const response = await fetch("/api/whatsapp/bulk-campaigns", {
         method: "POST",
         headers: staffHeaders,
-        body: JSON.stringify({ caseId: initiatePayload.case.id }),
+        body: JSON.stringify({
+          provider,
+          csv: bulkCsv,
+          source: "upload",
+          sourceFileName: bulkFileName,
+        }),
       });
-      const otpPayload = (await otpResponse.json()) as { status?: string; error?: string };
-      setCaseItem({ ...initiatePayload.case, status: (otpPayload.status as WhatsAppKycCase["status"]) ?? "otp_pending" });
-      setStep("otp");
-      addMessage("platform", `Your ${provider} KYC-Now OTP is 123456. Enter it here to verify this WhatsApp number.`);
+      const payload = (await response.json()) as { batch?: BulkCampaignBatch; error?: string };
+      if (!response.ok || !payload.batch) {
+        setQueueMessage(payload.error ?? "Bulk campaign ingestion failed.");
+        addMessage("platform", payload.error ?? "Bulk campaign ingestion failed.");
+        return;
+      }
+
+      setBatch(payload.batch);
+      setQueueCases(payload.batch.cases);
+      setQueueMessage(`${payload.batch.validCount} case(s) queued from ${payload.batch.batchReference}. Select an MSISDN to dispatch OTP.`);
+      addMessage(
+        "platform",
+        `${provider} bulk file loaded: ${payload.batch.validCount} case(s), ${payload.batch.errorCount} error(s). Select a queued MSISDN to start its WhatsApp KYC flow.`
+      );
+    });
+  }
+
+  async function loadBulkCsvFile(file: File | null) {
+    if (!file) return;
+    setBulkFileName(file.name);
+    setBulkCsv(await file.text());
+  }
+
+  async function startQueuedCase(nextCase: WhatsAppKycCase) {
+    await run(async () => {
+      resetCurrentFlow(nextCase.tenant, `Selected ${nextCase.tenant} queued MSISDN ${nextCase.applicant.phoneNumber ?? nextCase.staffInitiation.customerPhoneNumber}.`);
+      setIntakeMode("bulk");
+      setCaseItem(nextCase);
+      setFullName(nextCase.applicant.fullName ?? sampleCustomer.fullName);
+      setIdNumber(nextCase.applicant.idNumber ?? sampleCustomer.idNumber);
+      await sendOtpForCase(nextCase, `${nextCase.tenant} queued case ${nextCase.reference} is ready for WhatsApp dispatch.`);
     });
   }
 
@@ -170,7 +266,7 @@ export function WhatsAppKycChatDemo() {
         addMessage("platform", payload.error ?? "OTP verification failed. Try 123456 for the demo.");
         return;
       }
-      setCaseItem(payload.case);
+      applyCaseUpdate(payload.case);
       setStep("start");
       addMessage("platform", "OTP approved. Reply START KYC to continue and consent to the verification.");
     });
@@ -190,9 +286,16 @@ export function WhatsAppKycChatDemo() {
         body: JSON.stringify({ caseId: caseItem.id, event: "consent_received" }),
       });
       const payload = (await response.json()) as { case?: WhatsAppKycCase; error?: string };
-      if (payload.case) setCaseItem(payload.case);
-      setStep("fullName");
-      addMessage("platform", "Consent captured. Please enter your full name.");
+      if (payload.case) applyCaseUpdate(payload.case);
+      if (caseItem.applicant.fullName && caseItem.applicant.idNumber) {
+        setFullName(caseItem.applicant.fullName);
+        setIdNumber(caseItem.applicant.idNumber);
+        setStep("idDocument");
+        addMessage("platform", `Consent captured. Existing batch details found for ${caseItem.applicant.fullName}. Attach your ID, driver's license, or passport for OCR.`);
+      } else {
+        setStep("fullName");
+        addMessage("platform", "Consent captured. Please enter your full name.");
+      }
     });
   }
 
@@ -217,7 +320,7 @@ export function WhatsAppKycChatDemo() {
         addMessage("platform", payload.error ?? "Could not save applicant details.");
         return;
       }
-      setCaseItem(payload.case);
+      applyCaseUpdate(payload.case);
       setStep("idDocument");
       addMessage("platform", "Details saved. Attach your ID, driver's license, or passport for OCR.");
     });
@@ -244,7 +347,7 @@ export function WhatsAppKycChatDemo() {
         addMessage("platform", payload.error ?? "Could not process the ID document.");
         return;
       }
-      setCaseItem(payload.case);
+      applyCaseUpdate(payload.case);
       setStep("selfie");
       addMessage(
         "platform",
@@ -307,7 +410,7 @@ export function WhatsAppKycChatDemo() {
         }),
       });
       const biometricPayload = (await biometricResponse.json()) as { case?: WhatsAppKycCase; livenessScore?: number; faceMatchScore?: number };
-      if (biometricPayload.case) setCaseItem(biometricPayload.case);
+      if (biometricPayload.case) applyCaseUpdate(biometricPayload.case);
       streamRef.current?.getTracks().forEach((track) => track.stop());
       streamRef.current = null;
       setSelfieState("captured");
@@ -336,7 +439,7 @@ export function WhatsAppKycChatDemo() {
         }),
       });
       const payload = (await response.json()) as { case?: WhatsAppKycCase; error?: string };
-      if (payload.case) setCaseItem(payload.case);
+      if (payload.case) applyCaseUpdate(payload.case);
       setStep("verification");
       addMessage("platform", "Proof of address captured. Run final verification checks.");
     });
@@ -370,7 +473,7 @@ export function WhatsAppKycChatDemo() {
         addMessage("platform", payload.error ?? "Could not validate the affidavit.");
         return;
       }
-      setCaseItem(payload.case);
+      applyCaseUpdate(payload.case);
       setStep("verification");
       addMessage(
         "platform",
@@ -398,7 +501,7 @@ export function WhatsAppKycChatDemo() {
         addMessage("platform", payload.error ?? "Final verification failed.");
         return;
       }
-      setCaseItem(payload.case);
+      applyCaseUpdate(payload.case);
       setReport(payload.report);
       setReportCsv(payload.csv ?? "");
       setStep("complete");
@@ -426,6 +529,29 @@ export function WhatsAppKycChatDemo() {
             <h1 className="mt-1 text-xl font-semibold">MNO WhatsApp queue</h1>
           </div>
           <div className="p-4">
+            <div className="grid grid-cols-2 gap-2 rounded-xl border border-[#d8dfdc] bg-white p-1">
+              <button
+                type="button"
+                onClick={() => {
+                  setIntakeMode("single");
+                  if (step === "seed") setQueueMessage("Single MSISDN mode ready.");
+                }}
+                className={`rounded-lg px-3 py-2 text-sm font-semibold ${intakeMode === "single" ? "bg-[#075e54] text-white" : "text-[#35524b]"}`}
+              >
+                Single
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setIntakeMode("bulk");
+                  if (step === "seed") setQueueMessage(batch ? `${batch.validCount} queued case(s) loaded.` : "Paste or upload a bulk MSISDN CSV.");
+                }}
+                className={`rounded-lg px-3 py-2 text-sm font-semibold ${intakeMode === "bulk" ? "bg-[#075e54] text-white" : "text-[#35524b]"}`}
+              >
+                Bulk
+              </button>
+            </div>
+
             <label className="block text-sm font-semibold text-[#34443f]">
               Provider
               <select
@@ -439,11 +565,80 @@ export function WhatsAppKycChatDemo() {
                 <option value="Cell C">Cell C</option>
               </select>
             </label>
-            <div className="mt-4 border border-[#d8dfdc] bg-white p-3 text-sm leading-6 text-[#53625e]">
-              <p className="font-semibold text-[#20312c]">Mocked batch item</p>
-              <p>{sampleCustomer.phoneNumber}</p>
-              <p className="mt-2">Bulk ingestion remains unchanged. This screen simulates one MSISDN selected from an MNO file.</p>
-            </div>
+
+            {intakeMode === "single" ? (
+              <div className="mt-4 border border-[#d8dfdc] bg-white p-3 text-sm leading-6 text-[#53625e]">
+                <p className="font-semibold text-[#20312c]">Single MSISDN intake</p>
+                <input
+                  value={singleMsisdn}
+                  onChange={(event) => setSingleMsisdn(event.target.value)}
+                  className="mt-2 w-full border border-[#c8d2cc] px-3 py-2 text-sm"
+                  disabled={step !== "seed"}
+                  placeholder="+27..."
+                />
+                <button
+                  type="button"
+                  onClick={() => void seedMsisdnAndSendOtp()}
+                  disabled={busy || step !== "seed"}
+                  className="mt-3 rounded-full bg-[#25d366] px-4 py-2 text-sm font-bold text-[#063b34] disabled:opacity-60"
+                >
+                  Send OTP
+                </button>
+              </div>
+            ) : (
+              <div className="mt-4 border border-[#d8dfdc] bg-white p-3 text-sm leading-6 text-[#53625e]">
+                <p className="font-semibold text-[#20312c]">Bulk MSISDN intake</p>
+                <input
+                  value={bulkFileName}
+                  onChange={(event) => setBulkFileName(event.target.value)}
+                  className="mt-2 w-full border border-[#c8d2cc] px-3 py-2 text-sm"
+                  disabled={busy}
+                />
+                <textarea
+                  value={bulkCsv}
+                  onChange={(event) => setBulkCsv(event.target.value)}
+                  className="mt-2 min-h-28 w-full border border-[#c8d2cc] px-3 py-2 text-xs"
+                  disabled={busy}
+                />
+                <input
+                  type="file"
+                  accept=".csv,text/csv"
+                  onChange={(event) => void loadBulkCsvFile(event.target.files?.[0] ?? null)}
+                  className="mt-2 text-xs"
+                  disabled={busy}
+                />
+                <button
+                  type="button"
+                  onClick={() => void ingestBulkBatch()}
+                  disabled={busy}
+                  className="mt-3 rounded-full bg-[#25d366] px-4 py-2 text-sm font-bold text-[#063b34] disabled:opacity-60"
+                >
+                  Queue batch
+                </button>
+                <p className="mt-2 text-xs text-[#60746f]">{queueMessage}</p>
+              </div>
+            )}
+
+            {queueCases.length > 0 && (
+              <div className="mt-4 grid gap-2">
+                <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#60746f]">Queued MSISDNs</p>
+                {queueCases.map((queuedCase) => (
+                  <button
+                    key={queuedCase.id}
+                    type="button"
+                    onClick={() => void startQueuedCase(queuedCase)}
+                    className={`border px-3 py-2 text-left text-xs ${caseItem?.id === queuedCase.id ? "border-[#075e54] bg-[#dcf8c6]" : "border-[#d8dfdc] bg-white"}`}
+                  >
+                    <span className="block font-semibold text-[#20312c]">
+                      {queuedCase.applicant.phoneNumber ?? queuedCase.staffInitiation.customerPhoneNumber}
+                    </span>
+                    <span className="block text-[#60746f]">
+                      {queuedCase.reference} / {queuedCase.status} / {queuedCase.risk?.decision ?? "pending"}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
         </aside>
 
@@ -528,9 +723,15 @@ export function WhatsAppKycChatDemo() {
           <footer className="border-t border-[#d1d8d4] bg-[#f0f2f5] p-3">
             <div className="mx-auto flex max-w-3xl flex-wrap items-center gap-2">
               {step === "seed" && (
-                <button type="button" onClick={() => void seedMsisdnAndSendOtp()} className="rounded-full bg-[#25d366] px-4 py-2 text-sm font-bold text-[#063b34]">
-                  Mock batch MSISDN + send OTP
-                </button>
+                intakeMode === "single" ? (
+                  <button type="button" onClick={() => void seedMsisdnAndSendOtp()} className="rounded-full bg-[#25d366] px-4 py-2 text-sm font-bold text-[#063b34]">
+                    Send OTP to {singleMsisdn || "single MSISDN"}
+                  </button>
+                ) : (
+                  <button type="button" onClick={() => void ingestBulkBatch()} className="rounded-full bg-[#25d366] px-4 py-2 text-sm font-bold text-[#063b34]">
+                    Queue bulk batch
+                  </button>
+                )
               )}
               {step === "idDocument" && (
                 <>
@@ -580,7 +781,18 @@ export function WhatsAppKycChatDemo() {
                   </button>
                 </div>
               )}
-              {step === "complete" && <p className="text-sm font-semibold text-[#31524a]">Flow complete in one WhatsApp screen.</p>}
+              {step === "complete" && (
+                <>
+                  <p className="text-sm font-semibold text-[#31524a]">Flow complete in one WhatsApp screen.</p>
+                  <button
+                    type="button"
+                    onClick={() => resetCurrentFlow(provider)}
+                    className="rounded-full bg-[#075e54] px-4 py-2 text-sm font-bold text-white"
+                  >
+                    Start new KYC
+                  </button>
+                </>
+              )}
             </div>
           </footer>
         </section>

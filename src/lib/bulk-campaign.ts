@@ -49,7 +49,7 @@ type ParsedCsv = {
   errors: BulkCampaignError[];
 };
 
-const requiredHeaders = ["fullName", "idNumber", "phoneNumber"] as const;
+const requiredHeaders = ["phoneNumber"] as const;
 
 export async function ingestBulkCampaign(input: BulkCampaignInput): Promise<BulkCampaignResult> {
   const receivedAt = new Date().toISOString();
@@ -169,10 +169,10 @@ function normalizeCampaignRow(row: Record<string, string>, rowNumber: number): B
   const phoneNumber = normalizePhoneNumber(row.phoneNumber);
 
   if (!row.fullName.trim()) {
-    return { rowNumber, message: "fullName is required." };
+    row.fullName = "";
   }
 
-  if (!/^\d{13}$/.test(idNumber)) {
+  if (idNumber && !/^\d{13}$/.test(idNumber)) {
     return { rowNumber, message: "idNumber must contain 13 digits." };
   }
 
