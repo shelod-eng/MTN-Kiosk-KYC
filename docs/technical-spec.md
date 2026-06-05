@@ -66,10 +66,14 @@ If `fullName` and `idNumber` are supplied, they are prefilled. If they are missi
 - `POST /api/whatsapp/address/upload`: proof-of-address upload.
 - `POST /api/whatsapp/affidavit`: affidavit fallback and AI text scoring.
 - `POST /api/whatsapp/verification`: consolidated risk decision and report CSV.
+- `GET /api/whatsapp/queue`: BullMQ queue health and counts.
+- `POST /api/whatsapp/queue`: enqueue OTP, case-stage, or verification-report jobs.
 
 ## Data Storage
 
 Primary case state is stored in `kyc_cases` as a normalized row plus `case_payload`.
+
+Supabase Row Level Security should remain enabled for KYC tables. Server-side API routes use `SUPABASE_SERVICE_ROLE_KEY` for protected writes, while `SUPABASE_ANON_KEY` remains the public/browser-safe key. The service-role key must only be configured in server environments such as `.env.local` and Vercel environment variables.
 
 Important evidence fields:
 
@@ -113,9 +117,25 @@ Decision outcomes:
 
 Bulk cases are loaded into a UI queue. Selecting a queued MSISDN dispatches OTP and opens that case in the same WhatsApp journey.
 
-This is intentionally queue-ready for production. Future production options:
+This is intentionally queue-ready for production. BullMQ has been added as the Redis-backed queue engine for the production path.
 
-- BullMQ for Redis-backed jobs and retry control.
+Implemented queues:
+
+- `otp_dispatch`
+- `kyc_case`
+- `verification_report`
+
+Local commands:
+
+```bash
+npm run redis:local
+npm run worker
+```
+
+See `docs/bullmq-setup.md` for queue setup, worker behavior, concurrency, retry, and Twilio integration guidance.
+
+Alternative production schedulers still remain viable for specific needs:
+
 - Supabase cron for scheduled SFTP polling and batch dispatch.
 - Postgres queue table for lightweight queueing and audit-friendly processing.
 
