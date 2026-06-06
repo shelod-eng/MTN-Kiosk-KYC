@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { WhatsAppKycCase } from "@/lib/whatsapp-kyc";
+import { validateSouthAfricanIdNumber } from "@/lib/sa-id";
 
 const staffHeaders = {
   "Content-Type": "application/json",
@@ -12,7 +13,7 @@ const staffHeaders = {
 
 type NetworkProvider = "MTN" | "Vodacom" | "Cell C";
 type IntakeMode = "single" | "bulk";
-type ChatStep = "seed" | "otp" | "start" | "fullName" | "idNumber" | "idDocument" | "selfie" | "address" | "verification" | "complete";
+type ChatStep = "seed" | "otp" | "fullName" | "idNumber" | "idDocument" | "address" | "selfie" | "verification" | "complete";
 type Message = {
   id: string;
   sender: "platform" | "customer";
@@ -234,11 +235,6 @@ export function WhatsAppKycChatDemo() {
       return;
     }
 
-    if (step === "start") {
-      await acceptStart(value);
-      return;
-    }
-
     if (step === "fullName") {
       setFullName(value);
       setStep("idNumber");
@@ -247,8 +243,13 @@ export function WhatsAppKycChatDemo() {
     }
 
     if (step === "idNumber") {
-      setIdNumber(value);
-      await submitApplicantDetails(value);
+      const validation = validateSouthAfricanIdNumber(value);
+      if (!validation.isValid) {
+        addMessage("platform", `That SA ID number did not pass validation. ${validation.errors.join(" ")} Please enter a valid 13-digit SA ID number.`);
+        return;
+      }
+      setIdNumber(validation.normalized);
+      await submitApplicantDetails(validation.normalized);
       return;
     }
 
@@ -271,35 +272,8 @@ export function WhatsAppKycChatDemo() {
         return;
       }
       applyCaseUpdate(payload.case);
-      setStep("start");
-      addMessage("platform", "OTP approved. Reply START KYC to continue and consent to the verification.");
-    });
-  }
-
-  async function acceptStart(value: string) {
-    if (!caseItem) return;
-    if (!/start|agree|yes/i.test(value)) {
-      addMessage("platform", "Please reply START KYC or AGREE to continue.");
-      return;
-    }
-
-    await run(async () => {
-      const response = await fetch("/api/whatsapp/webhook", {
-        method: "POST",
-        headers: staffHeaders,
-        body: JSON.stringify({ caseId: caseItem.id, event: "consent_received" }),
-      });
-      const payload = (await response.json()) as { case?: WhatsAppKycCase; error?: string };
-      if (payload.case) applyCaseUpdate(payload.case);
-      if (caseItem.applicant.fullName && caseItem.applicant.idNumber) {
-        setFullName(caseItem.applicant.fullName);
-        setIdNumber(caseItem.applicant.idNumber);
-        setStep("idDocument");
-        addMessage("platform", `Consent captured. Existing batch details found for ${caseItem.applicant.fullName}. Attach your ID, driver's license, or passport for OCR.`);
-      } else {
-        setStep("fullName");
-        addMessage("platform", "Consent captured. Please enter your full name.");
-      }
+      setStep("fullName");
+      addMessage("platform", "OTP approved. MSISDN verified. Please enter your full name.");
     });
   }
 
@@ -326,7 +300,7 @@ export function WhatsAppKycChatDemo() {
       }
       applyCaseUpdate(payload.case);
       setStep("idDocument");
-      addMessage("platform", "Details saved. Attach your ID, driver's license, or passport for OCR.");
+      addMessage("platform", "ID checksum passed and details were saved. Attach your ID, driver's license, or passport for OCR.");
     });
   }
 
@@ -352,10 +326,10 @@ export function WhatsAppKycChatDemo() {
         return;
       }
       applyCaseUpdate(payload.case);
-      setStep("selfie");
+      setStep("address");
       addMessage(
         "platform",
-        `ID OCR completed for ${payload.ocr?.fileName ?? file.name} at ${Math.round((payload.ocr?.confidence ?? 0.93) * 100)}%. Capture selfie and liveness next.`
+        `ID OCR completed for ${payload.ocr?.fileName ?? file.name} at ${Math.round((payload.ocr?.confidence ?? 0.93) * 100)}%. Upload proof of address or type affidavit text next.`
       );
     });
   }
@@ -418,10 +392,10 @@ export function WhatsAppKycChatDemo() {
       streamRef.current?.getTracks().forEach((track) => track.stop());
       streamRef.current = null;
       setSelfieState("captured");
-      setStep("address");
+      setStep("verification");
       addMessage(
         "platform",
-        `Selfie verified. Liveness ${Math.round((biometricPayload.livenessScore ?? 0.91) * 100)}%, face match ${Math.round((biometricPayload.faceMatchScore ?? 0.89) * 100)}%. GPS ${locationResult.locationText}, tower ${locationResult.towerId ?? "pending"}, IP captured by session endpoint. Upload proof of address or type affidavit text.`
+        `Selfie verified against the uploaded ID. Liveness ${Math.round((biometricPayload.livenessScore ?? 0.91) * 100)}%, face match ${Math.round((biometricPayload.faceMatchScore ?? 0.89) * 100)}%. GPS ${locationResult.locationText}, tower ${locationResult.towerId ?? "pending"}, IP captured by session endpoint. Run final verification checks.`
       );
     });
   }
@@ -444,8 +418,8 @@ export function WhatsAppKycChatDemo() {
       });
       const payload = (await response.json()) as { case?: WhatsAppKycCase; error?: string };
       if (payload.case) applyCaseUpdate(payload.case);
-      setStep("verification");
-      addMessage("platform", "Proof of address captured. Run final verification checks.");
+      setStep("selfie");
+      addMessage("platform", "Proof of address OCR captured and cross-check queued. Open camera and fingerprint for selfie/liveness verification.");
     });
   }
 
@@ -478,10 +452,10 @@ export function WhatsAppKycChatDemo() {
         return;
       }
       applyCaseUpdate(payload.case);
-      setStep("verification");
+      setStep("selfie");
       addMessage(
         "platform",
-        `Affidavit AI read complete. Validation ${Math.round((payload.aiValidation?.score ?? 0.8) * 100)}%, proof ${payload.aiValidation?.proofAccepted ? "accepted" : "needs review"}. Run final checks.`
+        `Affidavit AI read complete. Validation ${Math.round((payload.aiValidation?.score ?? 0.8) * 100)}%, proof ${payload.aiValidation?.proofAccepted ? "accepted" : "needs review"}. Open camera and fingerprint for selfie/liveness verification.`
       );
     });
   }
@@ -840,7 +814,6 @@ function Metric({ label, value }: { label: string; value: string }) {
 
 function placeholderFor(step: ChatStep) {
   if (step === "otp") return "Enter OTP 123456";
-  if (step === "start") return "Reply START KYC";
   if (step === "fullName") return "Enter full name";
   if (step === "idNumber") return "Enter SA ID number";
   if (step === "address") return "Type affidavit text or attach proof";

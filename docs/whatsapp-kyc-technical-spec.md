@@ -5,7 +5,7 @@
 This prototype extends the existing KYC demo into a WhatsApp-first onboarding flow for MTN, Vodacom, and Cell C staff-assisted initiation. The implementation focus is:
 
 - staff-triggered case initiation
-- consent and minimal personal data capture
+- OTP-verified MSISDN and minimal personal data capture
 - single-screen WhatsApp-style customer journey
 - selfie/liveness and device/location capture scaffolding
 - OTP and affidavit APIs
@@ -22,13 +22,14 @@ This prototype extends the existing KYC demo into a WhatsApp-first onboarding fl
 
 1. MNO supplies a single MSISDN or a bulk file row.
 2. KYC-Now sends WhatsApp OTP to the verified MSISDN.
-3. Customer enters OTP and case moves from `consent_pending` to `otp_approved`.
-4. Customer replies `START KYC` / consent in the same WhatsApp screen.
-5. Customer provides full name and SA ID number. The MSISDN is not requested again.
-6. Customer attaches ID document for OCR, captures selfie/liveness, and records device/GPS/IP evidence.
+3. Customer enters OTP and case moves from `consent_pending` to `otp_approved`; OTP approval is treated as active MSISDN verification.
+4. Customer provides full name and SA ID number. The MSISDN is not requested again.
+5. SA ID validation enforces 13 digits, date structure, citizenship digit, and checksum before the flow continues.
+6. Customer attaches ID document for OCR.
 7. Customer uploads proof of address or submits free-text/scanned affidavit. No dropdown is required.
 8. AI affidavit reader validates the affidavit text as proof-of-address fallback.
-9. Risk engine evaluates the consolidated checks and returns an inline WhatsApp verification report with CSV export.
+9. Customer captures selfie/liveness and records device/GPS/IP evidence.
+10. Risk engine evaluates the consolidated checks and returns an inline WhatsApp verification report with CSV export.
 
 ## Trust layers
 
@@ -43,6 +44,13 @@ The current implementation uses weighted layer scoring:
 - GPS location and timestamp
 - device intelligence
 - provider tower residence zone where supplied by MNO batch files
+
+## Timestamp and audit handling
+
+- Case and bulk-row database timestamps use Supabase/Postgres UTC defaults at insert time.
+- `updated_at` is refreshed on every case update.
+- The immutable case payload audit trail is also persisted to `kyc_audit_logs`.
+- Audit events include `otp_sent`, `otp_verified`, `id_checksum_passed`, `id_checksum_failed`, `document_uploaded`, `proof_verified`, `selfie_verified`, and `final_verification_complete`.
 
 ## API surface implemented in prototype
 

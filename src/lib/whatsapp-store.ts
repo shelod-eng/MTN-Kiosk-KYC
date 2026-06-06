@@ -1,5 +1,6 @@
 import {
   applyWebhookEvent,
+  appendAudit,
   canTransitionCase,
   calculateRiskAssessment,
   createSecureSession,
@@ -105,6 +106,26 @@ async function persistCase(kycCase: WhatsAppKycCase) {
       },
     ]),
   });
+
+  if (kycCase.auditTrail.length > 0) {
+    await supabaseRequest("kyc_audit_logs?on_conflict=id", {
+      method: "POST",
+      body: JSON.stringify(
+        kycCase.auditTrail.map((entry) => ({
+          id: entry.id,
+          case_id: entry.caseId,
+          actor_role: entry.actorRole,
+          actor_id: entry.actorId,
+          action: entry.action,
+          details: {
+            ...entry.details,
+            eventTimestampUtc: entry.timestamp,
+            immutableHash: entry.immutableHash,
+          },
+        }))
+      ),
+    });
+  }
 
   return kycCase;
 }
@@ -352,7 +373,20 @@ export async function captureAffidavit(caseId: string, payload: AffidavitCapture
     },
     updatedAt: new Date().toISOString(),
   };
-  return persistCase(nextCase);
+  return persistCase(
+    appendAudit(nextCase, {
+      actorRole: "system",
+      actorId: "affidavit-ai-reader",
+      action: "proof_verified",
+      details: {
+        proofType: "digital_affidavit",
+        aiValidationScore: payload.aiValidationScore,
+        aiExtractedAddress: payload.aiExtractedAddress,
+        reviewReason: payload.aiReviewReason,
+        crossVerifiedAgainstDocument: Boolean(current.documentUrls.proofOfAddress),
+      },
+    })
+  );
 }
 
 export async function captureIdDocument(caseId: string, payload: { documentUrl: string; documentType: string; ocrConfidence?: number }) {
@@ -373,7 +407,18 @@ export async function captureIdDocument(caseId: string, payload: { documentUrl: 
     },
     updatedAt: new Date().toISOString(),
   };
-  return persistCase(nextCase);
+  return persistCase(
+    appendAudit(nextCase, {
+      actorRole: "system",
+      actorId: "ocr-provider",
+      action: "document_uploaded",
+      details: {
+        documentType: payload.documentType,
+        ocrConfidence: nextCase.verification.identityDocument.ocrConfidence,
+        extractedFieldsStored: true,
+      },
+    })
+  );
 }
 
 export async function captureProofOfAddress(caseId: string, payload: { proofOfAddressUrl: string; fileName?: string; documentType?: string }) {
@@ -405,7 +450,19 @@ export async function captureProofOfAddress(caseId: string, payload: { proofOfAd
     },
     updatedAt: new Date().toISOString(),
   };
-  return persistCase(nextCase);
+  return persistCase(
+    appendAudit(nextCase, {
+      actorRole: "system",
+      actorId: "address-ocr-provider",
+      action: "proof_verified",
+      details: {
+        documentType,
+        fileName: payload.fileName,
+        accepted: nextCase.verification.proofOfAddressDocument.accepted,
+        simulatedOcrScore: nextCase.verification.proofOfAddressDocument.simulatedOcrScore,
+      },
+    })
+  );
 }
 
 function inferProofOfAddressDocumentType(value: string) {
@@ -442,19 +499,18 @@ export async function upsertOtp(caseId: string, mode: "send" | "verify", attempt
   const hasAddressEvidence = Boolean(current.verification.proofOfAddressProvided || current.verification.digitalAffidavitProvided);
   const nextStatus =
     mode === "verify"
-      ? current.status === "otp_pending" && !current.applicant.fullName
-        ? "otp_approved"
-        : hasAddressEvidence
-        ? current.verification.locationShared
-          ? "risk_review"
-          : "location_pending"
-        : "address_pending"
+      ? "otp_approved"
       : current.status === "consent_pending"
         ? "otp_pending"
         : current.status;
   const nextCase = {
     ...current,
     status: nextStatus,
+    applicant: {
+      ...current.applicant,
+      consentGiven: mode === "verify" ? true : current.applicant.consentGiven,
+    },
+    consentCapturedAt: mode === "verify" ? now.toISOString() : current.consentCapturedAt,
     verification: {
       ...current.verification,
       otp:
@@ -475,7 +531,18 @@ export async function upsertOtp(caseId: string, mode: "send" | "verify", attempt
     },
     updatedAt: now.toISOString(),
   };
-  return persistCase(nextCase);
+  return persistCase(
+    appendAudit(nextCase, {
+      actorRole: "system",
+      actorId: "otp-provider",
+      action: mode === "verify" ? "otp_verified" : "otp_sent",
+      details: {
+        attempts,
+        msisdnVerified: mode === "verify",
+        phoneNumber: nextCase.applicant.phoneNumber ?? nextCase.staffInitiation.customerPhoneNumber,
+      },
+    })
+  );
 }
 
 export async function runRiskAssessment(caseId: string) {
@@ -488,7 +555,19 @@ export async function runRiskAssessment(caseId: string) {
     status: risk.status,
     updatedAt: new Date().toISOString(),
   };
-  return persistCase(nextCase);
+  return persistCase(
+    appendAudit(nextCase, {
+      actorRole: "system",
+      actorId: "risk-engine",
+      action: "final_verification_complete",
+      details: {
+        decision: risk.decision,
+        score: risk.score,
+        band: risk.band,
+        reasonCodes: risk.reasonCodes,
+      },
+    })
+  );
 }
 
 export function getPersistenceMode() {

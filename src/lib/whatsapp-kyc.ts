@@ -211,9 +211,9 @@ const validTransitions: Partial<Record<WhatsAppCaseStatus, WhatsAppCaseStatus[]>
   initiated: ["consent_pending"],
   consent_pending: ["otp_pending", "details_pending"],
   otp_pending: ["otp_approved", "address_pending"],
-  otp_approved: ["details_pending"],
+  otp_approved: ["details_pending", "selfie_pending"],
   details_pending: ["selfie_pending"],
-  selfie_pending: ["otp_pending", "address_pending"],
+  selfie_pending: ["otp_pending", "address_pending", "location_pending", "risk_review"],
   address_pending: ["location_pending", "risk_review"],
   location_pending: ["risk_review"],
   risk_review: ["approved", "manual_review", "rejected"],
@@ -276,6 +276,7 @@ export function createWhatsAppCase(input: StaffInitiationPayload): WhatsAppKycCa
 export function applyWebhookEvent(kycCase: WhatsAppKycCase, payload: WhatsAppWebhookPayload) {
   let nextCase = { ...kycCase, applicant: { ...kycCase.applicant }, verification: { ...kycCase.verification } };
   const previousStatus = kycCase.status;
+  const systemAuditEvents: Array<Omit<AuditLogEntry, "id" | "timestamp" | "caseId">> = [];
 
   if (payload.event === "consent_received") {
     nextCase.applicant.consentGiven = true;
@@ -290,6 +291,16 @@ export function applyWebhookEvent(kycCase: WhatsAppKycCase, payload: WhatsAppWeb
       String(payload.details?.phoneNumber ?? nextCase.applicant.phoneNumber ?? "")
     );
     nextCase.verification.idValidation = validateSouthAfricanIdNumber(nextCase.applicant.idNumber ?? "");
+    systemAuditEvents.push({
+      actorRole: "system",
+      actorId: "sa-id-validator",
+      action: nextCase.verification.idValidation.isValid ? "id_checksum_passed" : "id_checksum_failed",
+      details: {
+        normalizedIdNumber: nextCase.verification.idValidation.normalized,
+        errors: nextCase.verification.idValidation.errors,
+        dhaValidation: "mock_ready_for_production_integration",
+      },
+    });
     nextCase.status = "selfie_pending";
   }
 
@@ -297,7 +308,25 @@ export function applyWebhookEvent(kycCase: WhatsAppKycCase, payload: WhatsAppWeb
     nextCase.verification.livenessScore = Number(payload.details?.livenessScore ?? nextCase.verification.livenessScore ?? 0);
     nextCase.verification.faceMatchScore = Number(payload.details?.faceMatchScore ?? nextCase.verification.faceMatchScore ?? 0);
     nextCase.documentUrls.selfie = String(payload.details?.selfieUrl ?? nextCase.documentUrls.selfie ?? "");
-    nextCase.status = nextCase.verification.otp?.status === "verified" ? "address_pending" : "otp_pending";
+    const hasAddressEvidence = Boolean(nextCase.verification.proofOfAddressProvided || nextCase.verification.digitalAffidavitProvided);
+    nextCase.status =
+      nextCase.verification.otp?.status !== "verified"
+        ? "otp_pending"
+        : hasAddressEvidence
+          ? nextCase.verification.locationShared
+            ? "risk_review"
+            : "location_pending"
+          : "address_pending";
+    systemAuditEvents.push({
+      actorRole: "system",
+      actorId: "biometric-provider",
+      action: "selfie_verified",
+      details: {
+        livenessScore: nextCase.verification.livenessScore,
+        faceMatchScore: nextCase.verification.faceMatchScore,
+        comparedAgainstIdDocument: Boolean(nextCase.documentUrls.idDocument),
+      },
+    });
   }
 
   if (payload.event === "otp_sent") {
@@ -350,12 +379,13 @@ export function applyWebhookEvent(kycCase: WhatsAppKycCase, payload: WhatsAppWeb
   nextCase.updatedAt = new Date().toISOString();
   assertValidTransition(previousStatus, nextCase.status);
 
-  return appendAudit(nextCase, {
+  const auditedCase = appendAudit(nextCase, {
     actorRole: "customer",
     actorId: payload.actorId ?? "whatsapp-user",
     action: payload.event,
     details: payload.details ?? {},
   });
+  return systemAuditEvents.reduce((current, entry) => appendAudit(current, entry), auditedCase);
 }
 
 export function calculateRiskAssessment(kycCase: WhatsAppKycCase): RiskAssessment {
@@ -549,7 +579,7 @@ export function normalizePhoneNumber(value: string) {
   return digits ? `+${digits}` : "";
 }
 
-function appendAudit(
+export function appendAudit(
   kycCase: WhatsAppKycCase,
   entry: Omit<AuditLogEntry, "id" | "timestamp" | "caseId">
 ) {

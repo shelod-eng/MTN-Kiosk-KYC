@@ -40,16 +40,16 @@ If `fullName` and `idNumber` are supplied, they are prefilled. If they are missi
 1. `consent_pending`: case created.
 2. `otp_pending`: OTP sent.
 3. `otp_approved`: MSISDN verified.
-4. Customer replies `START KYC`.
-5. Customer supplies full name and SA ID if not prefilled.
+4. Customer supplies full name.
+5. Customer supplies SA ID; checksum validation must pass before continuing.
 6. Customer uploads ID, driver's licence, or passport.
 7. OCR endpoint stores ID document URL, document type, OCR confidence, and ID validation readiness.
-8. Customer captures selfie from browser camera.
-9. Biometric endpoint stores liveness and face-match scores.
-10. Device endpoint stores browser fingerprint, screen size, language, timezone, session continuity, cookies, and IP address.
-11. Location endpoint stores GPS coordinates, What3Words, and inferred nearest tower ID.
-12. Customer uploads proof of address or submits affidavit text.
-13. Affidavit AI reader scores free-text affidavit evidence.
+8. Customer uploads proof of address or submits affidavit text.
+9. Affidavit AI reader scores free-text affidavit evidence when used as fallback.
+10. Customer captures selfie from browser camera.
+11. Biometric endpoint stores liveness and face-match scores.
+12. Device endpoint stores browser fingerprint, screen size, language, timezone, session continuity, cookies, and IP address.
+13. Location endpoint stores GPS coordinates, What3Words, and inferred nearest tower ID.
 14. Final verification endpoint returns inline report and downloadable CSV.
 
 ## Core API Surface
