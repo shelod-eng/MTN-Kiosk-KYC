@@ -1,11 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getCaseBySessionToken } from "@/lib/whatsapp-store";
 
-type RouteContext = {
+type LocalRouteContext = {
   params: Promise<{ token: string }>;
 };
 
-export async function GET(_request: NextRequest, context: RouteContext) {
+export async function GET(_request: NextRequest, context: LocalRouteContext) {
   const { token } = await context.params;
   const kycCase = await getCaseBySessionToken(token);
 

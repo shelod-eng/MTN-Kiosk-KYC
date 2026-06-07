@@ -22,5 +22,8 @@ export async function POST(request: NextRequest) {
     caseId: updatedCase.id,
     status: updatedCase.status,
     proofOfAddressUrl: updatedCase.documentUrls.proofOfAddress,
+    proof: updatedCase.verification.proofOfAddressDocument,
+    requiresAffidavitFallback: Boolean(updatedCase.verification.proofOfAddressDocument?.reviewReason),
+    fallbackReason: updatedCase.verification.proofOfAddressDocument?.reviewReason ?? null,
   });
 }

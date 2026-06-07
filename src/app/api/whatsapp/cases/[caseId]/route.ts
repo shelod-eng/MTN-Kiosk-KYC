@@ -2,11 +2,11 @@ import { NextRequest, NextResponse } from "next/server";
 import { getCase } from "@/lib/whatsapp-store";
 import { requirePermission } from "@/lib/staff-auth";
 
-type RouteContext = {
+type LocalRouteContext = {
   params: Promise<{ caseId: string }>;
 };
 
-export async function GET(_request: NextRequest, context: RouteContext) {
+export async function GET(_request: NextRequest, context: LocalRouteContext) {
   const request = _request;
   const auth = requirePermission(request, "case:view");
   if (!auth.ok) {

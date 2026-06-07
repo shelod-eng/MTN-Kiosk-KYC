@@ -310,18 +310,22 @@ export function WhatsAppKycChatDemo() {
     await run(async () => {
       const documentUrl = await readFileAsDataUrl(file);
       const documentType = inferIdentityDocumentType(file.name);
+      const token = encodeURIComponent(caseItem.secureSessionToken);
       addMessage("customer", `Attached ${file.name}.`);
-      const response = await fetch(`/api/whatsapp/session/${caseItem.secureSessionToken}/document`, {
+      const response = await fetch(`/api/whatsapp/session/${token}/document`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          caseId: caseItem.id,
           documentUrl,
           documentType,
           fileName: file.name,
         }),
       });
-      const payload = (await response.json()) as { case?: WhatsAppKycCase; ocr?: { confidence: number; fileName?: string }; error?: string };
-      if (!payload.case) {
+      const payload = response.ok
+        ? ((await response.json()) as { case?: WhatsAppKycCase; ocr?: { confidence: number; fileName?: string }; error?: string })
+        : { error: await readApiError(response) };
+      if (!response.ok || !payload.case) {
         addMessage("platform", payload.error ?? "Could not process the ID document.");
         return;
       }
@@ -372,12 +376,13 @@ export function WhatsAppKycChatDemo() {
       }
       setSelfiePreview(selfieImage);
       addMessage("customer", "Captured selfie from live camera.");
-      await fetch(`/api/whatsapp/session/${caseItem.secureSessionToken}/device`, {
+      const token = encodeURIComponent(caseItem.secureSessionToken);
+      await fetch(`/api/whatsapp/session/${token}/device`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(buildDeviceFingerprint()),
       });
-      const locationResult = await captureBrowserLocation(caseItem.secureSessionToken);
+      const locationResult = await captureBrowserLocation(token);
       const biometricResponse = await fetch("/api/whatsapp/biometrics/analyze", {
         method: "POST",
         headers: staffHeaders,
@@ -416,10 +421,24 @@ export function WhatsAppKycChatDemo() {
           documentType: inferProofDocumentType(file.name),
         }),
       });
-      const payload = (await response.json()) as { case?: WhatsAppKycCase; error?: string };
+      const payload = (await response.json()) as {
+        case?: WhatsAppKycCase;
+        proof?: { accepted?: boolean; reviewReason?: string };
+        requiresAffidavitFallback?: boolean;
+        fallbackReason?: string | null;
+        error?: string;
+      };
       if (payload.case) applyCaseUpdate(payload.case);
+      if (payload.requiresAffidavitFallback) {
+        setStep("address");
+        addMessage(
+          "platform",
+          `${payload.fallbackReason ?? "Proof of address needs manual RICA review."} Please type or upload an affidavit confirming your residence before selfie/liveness verification.`
+        );
+        return;
+      }
       setStep("selfie");
-      addMessage("platform", "Proof of address OCR captured and cross-check queued. Open camera and fingerprint for selfie/liveness verification.");
+      addMessage("platform", "Proof of address OCR captured and accepted for KYC/RICA. Open camera and fingerprint for selfie/liveness verification.");
     });
   }
 
@@ -440,6 +459,7 @@ export function WhatsAppKycChatDemo() {
             { question: "Do you have formal proof of address?", answer: "No" },
           ],
           videoUrl: "whatsapp-affidavit-video.mp4",
+          imageUrl: "whatsapp-affidavit-image.png",
         }),
       });
       const payload = (await response.json()) as {
@@ -829,11 +849,21 @@ function inferIdentityDocumentType(fileName: string) {
 
 function inferProofDocumentType(fileName: string) {
   const normalized = fileName.toLowerCase();
-  if (normalized.includes("bank")) return "Bank statement";
+  if (normalized.includes("bank") || normalized.includes("capitec") || normalized.includes("statement") || normalized.includes("invoice") || normalized.includes("inv-")) return "Bank statement";
   if (normalized.includes("eskom") || normalized.includes("electric")) return "Eskom or municipal electricity account";
   if (normalized.includes("water") || normalized.includes("rates") || normalized.includes("municipal")) return "Water and rates account";
   if (normalized.includes("telkom") || normalized.includes("internet") || normalized.includes("isp")) return "Telkom or internet service provider invoice";
   return "Proof of address document";
+}
+
+async function readApiError(response: Response) {
+  const contentType = response.headers.get("content-type") ?? "";
+  if (contentType.includes("application/json")) {
+    const payload = (await response.json().catch(() => null)) as { error?: string } | null;
+    return payload?.error ?? `Request failed with status ${response.status}.`;
+  }
+
+  return `Request failed with status ${response.status}. Please retry or restart the KYC case.`;
 }
 
 function buildDeviceFingerprint() {
@@ -870,16 +900,18 @@ async function captureBrowserLocation(token: string) {
     );
   });
 
-  const response = await fetch(`/api/whatsapp/session/${token}/location`, {
+  const response = await fetch(`/api/whatsapp/session/${encodeURIComponent(token)}/location`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(coords),
   });
-  const payload = (await response.json()) as {
-    what3words?: string;
-    towerId?: string;
-    location?: { latitude: number; longitude: number; accuracy?: number };
-  };
+  const payload = response.ok
+    ? ((await response.json()) as {
+        what3words?: string;
+        towerId?: string;
+        location?: { latitude: number; longitude: number; accuracy?: number };
+      })
+    : { what3words: undefined, towerId: undefined, location: coords };
   const location = payload.location ?? coords;
   return {
     locationText: `${location.latitude.toFixed(5)}, ${location.longitude.toFixed(5)}${payload.what3words ? ` / ${payload.what3words}` : ""}`,

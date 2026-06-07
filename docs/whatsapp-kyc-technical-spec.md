@@ -31,6 +31,27 @@ This prototype extends the existing KYC demo into a WhatsApp-first onboarding fl
 9. Customer captures selfie/liveness and records device/GPS/IP evidence.
 10. Risk engine evaluates the consolidated checks and returns an inline WhatsApp verification report with CSV export.
 
+## KYC/RICA proof-of-address decision tree
+
+KYC-Now prioritises baseline Mobile Network Operator KYC/RICA compliance before any FICA or bureau extension checks.
+
+1. Proof of address uploaded:
+   - If the document is dated within 3 months, accept it and continue to selfie/liveness.
+   - If the document is older than 3 months or future-dated, mark it as expired/review evidence, request an affidavit fallback, and flag the case for manual review.
+
+2. Proof of address missing:
+   - Prompt the customer to provide a digital affidavit confirming residence.
+   - If an affidavit is provided, continue with selfie/liveness, GPS/tower/IP evidence, and send the case to manual review.
+   - If both proof of address and affidavit are missing, flag the case as high risk and reject.
+
+3. Risk engine enforcement:
+   - Valid proof of address: normal KYC/RICA scoring.
+   - Expired proof plus affidavit: downgrade to `REVIEW`.
+   - Missing proof plus missing affidavit: `REJECT`.
+   - ID mismatch, invalid SA ID checksum, or missing critical device/location evidence can still trigger high-risk rejection.
+
+Audit events for this path include `proof_uploaded`, `proof_expired`, `affidavit_requested`, `affidavit_uploaded`, `proof_verified`, and `final_verification_complete`.
+
 ## Trust layers
 
 The current implementation uses weighted layer scoring:

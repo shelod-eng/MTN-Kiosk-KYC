@@ -2,11 +2,11 @@ import { NextRequest, NextResponse } from "next/server";
 import { getCase, updateCaseStatus } from "@/lib/whatsapp-store";
 import { requirePermission } from "@/lib/staff-auth";
 
-type RouteContext = {
+type LocalRouteContext = {
   params: Promise<{ caseId: string }>;
 };
 
-export async function PATCH(request: NextRequest, context: RouteContext) {
+export async function PATCH(request: NextRequest, context: LocalRouteContext) {
   const auth = requirePermission(request, "case:review");
   if (!auth.ok) {
     return NextResponse.json({ error: auth.error }, { status: 403 });

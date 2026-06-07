@@ -2,11 +2,11 @@ import { NextRequest, NextResponse } from "next/server";
 import { resolveWhat3Words } from "@/lib/provider-adapters";
 import { captureLocation, getCaseBySessionToken } from "@/lib/whatsapp-store";
 
-type RouteContext = {
+type LocalRouteContext = {
   params: Promise<{ token: string }>;
 };
 
-export async function POST(request: NextRequest, context: RouteContext) {
+export async function POST(request: NextRequest, context: LocalRouteContext) {
   const { token } = await context.params;
   const kycCase = await getCaseBySessionToken(token);
   if (!kycCase) {

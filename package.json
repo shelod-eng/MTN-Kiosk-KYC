@@ -4,6 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
+    "dev:dashboard": "next dev -p 4000",
     "build": "next build",
     "start": "next start",
     "worker": "node scripts/kyc-worker.mjs",

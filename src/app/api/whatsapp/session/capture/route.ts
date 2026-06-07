@@ -11,6 +11,7 @@ export async function POST(request: NextRequest) {
 
   const updatedCase = await captureDeviceIntelligence(body.caseId, {
     browserFingerprint: body.browserFingerprint,
+    ipAddress: body.ipAddress ?? getRequestIp(request),
     operatingSystem: body.operatingSystem,
     browser: body.browser,
     screenSize: body.screenSize,
@@ -29,4 +30,14 @@ export async function POST(request: NextRequest) {
     deviceIntelligence: updatedCase.deviceIntelligence,
     status: updatedCase.status,
   });
+}
+
+function getRequestIp(request: NextRequest) {
+  const forwardedFor = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim();
+  const realIp = request.headers.get("x-real-ip")?.trim();
+  const cloudflareIp = request.headers.get("cf-connecting-ip")?.trim();
+  const clientIp = request.headers.get("x-client-ip")?.trim();
+  const requestIp = typeof (request as unknown as { ip?: string }).ip === "string" ? (request as unknown as { ip: string }).ip : undefined;
+
+  return forwardedFor || realIp || cloudflareIp || clientIp || requestIp || "local-dev";
 }

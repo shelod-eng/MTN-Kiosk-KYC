@@ -22,6 +22,7 @@ export type TrustLayerResult = {
   key:
     | "name"
     | "id_number"
+    | "id_document"
     | "otp"
     | "liveness"
     | "face_match"
@@ -96,10 +97,13 @@ export type AffidavitCapture = {
   declarationAccepted: boolean;
   responses: Array<{ question: string; answer: string }>;
   affidavitText?: string;
+  extractedIdNumber?: string;
+  matchedIdNumber?: boolean;
   aiValidationScore?: number;
   aiExtractedAddress?: string;
   aiReviewReason?: string;
   videoUrl?: string;
+  imageUrl?: string;
   capturedAt: string;
 };
 
@@ -114,6 +118,7 @@ export type ResidenceEvidence = {
   towerId?: string;
   locationEvidence?: string;
   affidavitVideoUrl?: string;
+  affidavitImageUrl?: string;
   capturedAt: string;
 };
 
@@ -165,12 +170,18 @@ export type WhatsAppKycCase = {
     selfie?: string;
     proofOfAddress?: string;
     affidavitVideo?: string;
+    affidavitImage?: string;
   };
   verification: {
     idValidation?: ReturnType<typeof validateSouthAfricanIdNumber>;
     identityDocument?: {
       documentType: string;
       ocrConfidence: number;
+      fileName?: string;
+      extractedIdNumber?: string;
+      extractedFullName?: string;
+      matchedEnteredId?: boolean; // match at upload time
+      matchedEnteredIdFinal?: boolean; // final match after biometrics
     };
     livenessScore?: number;
     faceMatchScore?: number;
@@ -180,6 +191,10 @@ export type WhatsAppKycCase = {
       fileName?: string;
       accepted: boolean;
       simulatedOcrScore: number;
+      documentDate?: string;
+      isExpired?: boolean;
+      isFutureDated?: boolean;
+      reviewReason?: string;
     };
     proofOfAddressProvided?: boolean;
     digitalAffidavitProvided?: boolean;
@@ -325,8 +340,18 @@ export function applyWebhookEvent(kycCase: WhatsAppKycCase, payload: WhatsAppWeb
         livenessScore: nextCase.verification.livenessScore,
         faceMatchScore: nextCase.verification.faceMatchScore,
         comparedAgainstIdDocument: Boolean(nextCase.documentUrls.idDocument),
+        extractedIdNumber: nextCase.verification.identityDocument?.extractedIdNumber ?? null,
+        matchedEnteredIdFinal: nextCase.verification.identityDocument?.extractedIdNumber
+          ? String(nextCase.verification.identityDocument?.extractedIdNumber) === String(nextCase.applicant.idNumber ?? "")
+          : nextCase.verification.identityDocument?.matchedEnteredId ?? false,
       },
     });
+
+    // persist final matched flag into verification.identityDocument
+    if (nextCase.verification.identityDocument?.extractedIdNumber) {
+      nextCase.verification.identityDocument.matchedEnteredIdFinal =
+        String(nextCase.verification.identityDocument.extractedIdNumber) === String(nextCase.applicant.idNumber ?? "");
+    }
   }
 
   if (payload.event === "otp_sent") {
@@ -388,28 +413,92 @@ export function applyWebhookEvent(kycCase: WhatsAppKycCase, payload: WhatsAppWeb
   return systemAuditEvents.reduce((current, entry) => appendAudit(current, entry), auditedCase);
 }
 
+function isValidIpForRisk(ip: string | undefined): boolean {
+  if (!ip || typeof ip !== "string") return false;
+  const trimmed = ip.trim();
+  // Reject localhost, IPv6 loopback, private ranges, and demo values
+  if (/^(127|::1|0\.0\.0\.0|localhost|unknown|demo-local-ip|,|:)/.test(trimmed)) return false;
+  if (/^(10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.)/.test(trimmed)) return false;
+  // Valid IPv4: 4 octets separated by dots
+  if (/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(trimmed)) return true;
+  // Valid IPv6: contains at least 2 colons and is not loopback
+  if (trimmed.includes(":") && !trimmed.startsWith("::")) return true;
+  return false;
+}
+
 export function calculateRiskAssessment(kycCase: WhatsAppKycCase): RiskAssessment {
   const idValidation = kycCase.verification.idValidation ?? validateSouthAfricanIdNumber(kycCase.applicant.idNumber ?? "");
   const hasFullName = Boolean(kycCase.applicant.fullName?.trim());
   const otpVerified = kycCase.verification.otp?.status === "verified";
   const livenessScore = kycCase.verification.livenessScore ?? 0;
   const faceMatchScore = kycCase.verification.faceMatchScore ?? 0;
-  const proofSupported = Boolean(kycCase.verification.proofOfAddressProvided || kycCase.verification.digitalAffidavitProvided);
+  const idDocument = kycCase.verification.identityDocument;
+  const idDocumentCaptured = Boolean(kycCase.documentUrls.idDocument && idDocument);
+  const idDocumentMatched =
+    idDocument?.matchedEnteredIdFinal ?? idDocument?.matchedEnteredId ?? (idDocument?.extractedIdNumber ? false : undefined);
+  const idDocumentMismatch = idDocumentMatched === false;
+  
+  // Check proof document acceptance and consistency
+  const proofDocAccepted = kycCase.verification.proofOfAddressDocument?.accepted ?? false;
+  const proofNeedsReview = Boolean(kycCase.verification.proofOfAddressDocument?.reviewReason);
+  const proofDocumentQuality = kycCase.verification.proofOfAddressDocument?.simulatedOcrScore ?? (kycCase.verification.digitalAffidavitProvided ? kycCase.affidavit?.aiValidationScore : 0);
+  const proofSupported = Boolean((kycCase.verification.proofOfAddressProvided && proofDocAccepted && (proofDocumentQuality ?? 0) >= 0.72) || kycCase.verification.digitalAffidavitProvided);
+  const hasAddressEvidence = Boolean(kycCase.verification.proofOfAddressProvided || kycCase.verification.digitalAffidavitProvided);
+  const proofRejected = Boolean(kycCase.verification.proofOfAddressProvided && !proofDocAccepted && !proofNeedsReview && !kycCase.verification.digitalAffidavitProvided);
+  const affidavitIdMismatch = kycCase.affidavit?.matchedIdNumber === false;
+  
   const towerId = kycCase.residenceEvidence?.towerId ?? kycCase.staffInitiation.bulkCampaign?.towerId;
   const locationEvidence = kycCase.residenceEvidence?.locationEvidence ?? kycCase.staffInitiation.bulkCampaign?.locationEvidence;
-  const hasProviderGps = Boolean(kycCase.residenceEvidence?.gpsCoordinates && kycCase.residenceEvidence.source === "provider_batch");
+  const hasProviderGps = Boolean(kycCase.residenceEvidence?.gpsCoordinates);
   const towerLocationAvailable = Boolean(towerId);
-  const locationShared = Boolean(kycCase.verification.locationShared || hasProviderGps);
+  const locationShared = Boolean(kycCase.verification.locationShared || kycCase.geoCapture || hasProviderGps);
   const affidavitAndLocation = Boolean(kycCase.verification.digitalAffidavitProvided && (locationShared || towerLocationAvailable));
-  const deviceLinked = Boolean(kycCase.deviceIntelligence?.browserFingerprint);
+  const hasIpAddress = Boolean(kycCase.deviceIntelligence?.ipAddress?.trim());
+  const hasDeviceFingerprint = Boolean(kycCase.deviceIntelligence?.browserFingerprint?.trim());
+  const deviceLinked = Boolean(hasDeviceFingerprint && hasIpAddress && isValidIpForRisk(kycCase.deviceIntelligence?.ipAddress));
+  const deviceCaptured = Boolean(hasDeviceFingerprint && hasIpAddress);
+  const missingLocationEvidence = !locationShared && !towerLocationAvailable;
+  const auditActions = new Set(kycCase.auditTrail.map((entry) => entry.action));
+  const missingRequiredAuditEvents = [
+    idDocumentCaptured && !auditActions.has("document_uploaded") ? "document_uploaded" : null,
+    hasAddressEvidence && !auditActions.has("proof_verified") ? "proof_verified" : null,
+    kycCase.documentUrls.selfie && !auditActions.has("selfie_verified") ? "selfie_verified" : null,
+  ].filter((action): action is string => Boolean(action));
 
   const layers: TrustLayerResult[] = [
     weightedLayer("name", "Full name captured", hasFullName ? 100 : 0, 0.08, hasFullName ? "pass" : "missing", hasFullName ? "Customer full name captured." : "Full name is still missing."),
     weightedLayer("id_number", "SA ID validation", idValidation.isValid ? 100 : 20, 0.16, idValidation.isValid ? "pass" : "fail", idValidation.isValid ? "ID format and checksum passed." : idValidation.errors.join(" ")),
+    weightedLayer(
+      "id_document",
+      "Uploaded ID document match",
+      idDocumentCaptured ? (idDocumentMismatch ? 15 : idDocumentMatched ? 100 : 70) : 0,
+      0.1,
+      !idDocumentCaptured ? "missing" : idDocumentMismatch ? "fail" : idDocumentMatched ? "pass" : "review",
+      !idDocumentCaptured
+        ? "ID, driver's licence, or passport upload is still required."
+        : idDocumentMismatch
+          ? `Uploaded document ID ${idDocument?.extractedIdNumber ?? "unknown"} does not match entered applicant ID.`
+          : idDocumentMatched
+            ? "Uploaded document ID matches the entered applicant ID."
+            : "Uploaded document ID could not be fully matched by the prototype OCR."
+    ),
     weightedLayer("otp", "OTP verification", otpVerified ? 100 : 25, 0.12, otpVerified ? "pass" : "review", otpVerified ? "OTP verified successfully." : "OTP verification is incomplete."),
     weightedLayer("liveness", "Liveness detection", Math.round(livenessScore * 100), 0.16, livenessScore >= 0.8 ? "pass" : livenessScore >= 0.65 ? "review" : "fail", `Liveness score ${livenessScore.toFixed(2)}.`),
     weightedLayer("face_match", "Face match", Math.round(faceMatchScore * 100), 0.14, faceMatchScore >= 0.82 ? "pass" : faceMatchScore >= 0.7 ? "review" : "fail", `Face match score ${faceMatchScore.toFixed(2)}.`),
-    weightedLayer("proof_of_address", "Proof of address or affidavit", proofSupported ? 100 : 35, 0.12, proofSupported ? "pass" : "review", proofSupported ? "Address evidence is present." : "Proof of address or affidavit is still required."),
+    weightedLayer(
+      "proof_of_address",
+      "Proof of address or affidavit",
+      Math.round((proofDocumentQuality ?? 0) * 100),
+      0.12,
+      proofSupported && (proofDocumentQuality ?? 0) >= 0.72 ? "pass" : hasAddressEvidence ? "review" : "fail",
+      proofSupported
+        ? `Address evidence accepted with ${Math.round((proofDocumentQuality ?? 0) * 100)}% quality.`
+        : proofNeedsReview
+          ? kycCase.verification.proofOfAddressDocument?.reviewReason ?? "Proof of address needs RICA manual review."
+          : proofRejected
+            ? "Proof of address document was captured but needs manual compliance review."
+            : "Proof of address or affidavit is still required."
+    ),
     weightedLayer("location", "GPS location and timestamp", locationShared ? 100 : towerLocationAvailable ? 70 : 40, 0.09, locationShared ? "pass" : towerLocationAvailable ? "review" : "missing", locationShared ? "GPS location captured." : towerLocationAvailable ? "Provider tower location is available, but customer GPS is still preferred." : "Location has not been shared."),
     weightedLayer(
       "tower_location",
@@ -423,20 +512,62 @@ export function calculateRiskAssessment(kycCase: WhatsAppKycCase): RiskAssessmen
           ? "Customer GPS is the primary residence signal."
           : "No provider tower residence zone supplied."
     ),
-    weightedLayer("device", "Device intelligence", deviceLinked ? 100 : 45, 0.1, deviceLinked ? "pass" : "review", deviceLinked ? "Device intelligence linked to secure session." : "Device fingerprint has not been captured."),
+    weightedLayer(
+      "device",
+      "Device intelligence",
+      deviceLinked ? 100 : deviceCaptured ? 70 : 0,
+      0.1,
+      deviceLinked ? "pass" : deviceCaptured ? "review" : "missing",
+      deviceLinked
+        ? "Device intelligence linked to secure session."
+        : deviceCaptured
+          ? "Device/IP captured; local or private IP requires production network verification."
+          : "Device fingerprint or IP address has not been captured."
+    ),
   ];
 
-  const score = Math.round(layers.reduce((sum, layer) => sum + layer.score * layer.weight, 0));
+  const baseScore = Math.min(100, Math.round(layers.reduce((sum, layer) => sum + layer.score * layer.weight, 0)));
   const reasonCodes = layers.filter((layer) => layer.status !== "pass").map((layer) => layer.key.toUpperCase());
+  if (idDocumentMismatch) reasonCodes.push("ID_DOCUMENT_MISMATCH");
+  if (affidavitIdMismatch) reasonCodes.push("AFFIDAVIT_ID_MISMATCH");
+  if (!idDocumentCaptured) reasonCodes.push("ID_DOCUMENT_MISSING");
+  if (!hasAddressEvidence) reasonCodes.push("ADDRESS_EVIDENCE_MISSING");
+  if (proofNeedsReview) reasonCodes.push("PROOF_ADDRESS_REVIEW_REQUIRED");
+  if (proofRejected) reasonCodes.push("PROOF_ADDRESS_REVIEW_REQUIRED");
+  if (!hasIpAddress) reasonCodes.push("IP_ADDRESS_MISSING");
+  if (missingLocationEvidence) reasonCodes.push("GPS_OR_TOWER_MISSING");
+  if (missingRequiredAuditEvents.length > 0) reasonCodes.push("AUDIT_EVENTS_MISSING");
 
   let band: RiskBand = "low";
   let decision: Decision = "APPROVE";
   let status: RiskAssessment["status"] = "approved";
+  let score = baseScore;
 
   const anyFail = layers.some((layer) => layer.status === "fail");
   const anyReview = layers.some((layer) => layer.status === "review" || layer.status === "missing");
+  const hardFailure = Boolean(
+    !idValidation.isValid ||
+      !idDocumentCaptured ||
+      idDocumentMismatch ||
+      affidavitIdMismatch ||
+      !hasAddressEvidence ||
+      (!hasIpAddress && missingLocationEvidence)
+  );
+  const complianceReview = Boolean(
+    proofRejected ||
+      proofNeedsReview ||
+      !deviceCaptured ||
+      missingLocationEvidence ||
+      missingRequiredAuditEvents.length > 0 ||
+      (kycCase.verification.digitalAffidavitProvided && !kycCase.verification.proofOfAddressProvided)
+  );
 
-  if (affidavitAndLocation && !anyFail && score >= 78) {
+  if (hardFailure) {
+    band = "high";
+    decision = "REJECT";
+    status = "rejected";
+    score = Math.min(score, 49);
+  } else if (affidavitAndLocation && !anyFail && score >= 78 && !complianceReview) {
     band = "low";
     decision = "APPROVE";
     status = "approved";
@@ -444,10 +575,11 @@ export function calculateRiskAssessment(kycCase: WhatsAppKycCase): RiskAssessmen
     band = "high";
     decision = "REJECT";
     status = "rejected";
-  } else if (score < 80 || anyReview) {
+  } else if (score < 80 || anyReview || complianceReview) {
     band = "medium";
     decision = "REVIEW";
     status = "manual_review";
+    score = complianceReview ? Math.min(score, 74) : score;
   }
 
   return {

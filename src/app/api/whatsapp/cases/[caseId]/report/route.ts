@@ -2,11 +2,11 @@ import { NextRequest, NextResponse } from "next/server";
 import { buildVerificationReport, verificationReportToCsv } from "@/lib/kyc-report";
 import { getCase } from "@/lib/whatsapp-store";
 
-type RouteContext = {
+type LocalRouteContext = {
   params: Promise<{ caseId: string }>;
 };
 
-export async function GET(request: NextRequest, context: RouteContext) {
+export async function GET(request: NextRequest, context: LocalRouteContext) {
   const { caseId } = await context.params;
   const format = request.nextUrl.searchParams.get("format") ?? "json";
   const kycCase = await getCase(caseId);

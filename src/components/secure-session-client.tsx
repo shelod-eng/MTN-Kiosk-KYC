@@ -15,7 +15,7 @@ export function SecureSessionClient({ kycCase, token }: SecureSessionClientProps
   const [locationSaved, setLocationSaved] = useState<string | null>(null);
   const [locationMessage, setLocationMessage] = useState("Capture home GPS location for informal settlement support.");
   const [affidavitSaved, setAffidavitSaved] = useState(false);
-  const [idUpload, setIdUpload] = useState<{ fileName: string; documentType: string; confidence: number } | null>(null);
+  const [idUpload, setIdUpload] = useState<{ fileName: string; documentType: string; confidence: number; extractedIdNumber?: string | null; matchedEnteredId?: boolean | null } | null>(null);
   const [proofDocumentType, setProofDocumentType] = useState("Bank statement");
   const [proofUpload, setProofUpload] = useState<{ fileName: string; documentType: string } | null>(null);
   const [selfiePreview, setSelfiePreview] = useState<string | null>(sessionCase.documentUrls.selfie ?? null);
@@ -39,11 +39,21 @@ export function SecureSessionClient({ kycCase, token }: SecureSessionClientProps
       cookiesEnabled: navigator.cookieEnabled,
     };
 
-    void fetch(`/api/whatsapp/session/${token}/device`, {
+    void fetch(`/api/whatsapp/session/${encodeURIComponent(token)}/device`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
-    }).then(() => setDeviceSaved(true));
+    })
+      .then(async (response) => {
+        if (!response.ok) {
+          setDeviceSaved(false);
+          return;
+        }
+        const result = (await response.json()) as { case?: WhatsAppKycCase };
+        if (result.case) setSessionCase(result.case);
+        setDeviceSaved(true);
+      })
+      .catch(() => setDeviceSaved(false));
   }, [token]);
 
   useEffect(() => {
@@ -59,18 +69,22 @@ export function SecureSessionClient({ kycCase, token }: SecureSessionClientProps
   }, []);
 
   async function refreshSessionCase() {
-    const response = await fetch(`/api/whatsapp/session/${token}`);
-    const payload = (await response.json()) as { case?: WhatsAppKycCase };
+    const response = await fetch(`/api/whatsapp/session/${encodeURIComponent(token)}`);
+    const payload = response.ok
+      ? ((await response.json()) as { case?: WhatsAppKycCase })
+      : { case: undefined };
     if (payload.case) setSessionCase(payload.case);
   }
 
   async function submitLocation(latitude: number, longitude: number, accuracy?: number) {
-    const response = await fetch(`/api/whatsapp/session/${token}/location`, {
+    const response = await fetch(`/api/whatsapp/session/${encodeURIComponent(token)}/location`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ latitude, longitude, accuracy }),
     });
-    const result = (await response.json()) as { case?: WhatsAppKycCase; what3words?: string; error?: string };
+    const result = response.ok
+      ? ((await response.json()) as { case?: WhatsAppKycCase; what3words?: string; error?: string })
+      : { error: await response.text() };
     if (!response.ok) {
       setLocationMessage(result.error ?? "Unable to save GPS location.");
       return;
@@ -112,7 +126,9 @@ export function SecureSessionClient({ kycCase, token }: SecureSessionClientProps
           { question: "Do you confirm this is your primary home address?", answer: "Yes" },
           { question: "Do you lack a utility bill?", answer: "Yes" },
         ],
+        affidavitText: "I confirm that I reside at the address above and do not have a formal proof of address.",
         videoUrl: "secure-session-affidavit-demo.mp4",
+        imageUrl: "secure-session-affidavit-demo.png",
       }),
     });
     const result = (await response.json()) as { case?: WhatsAppKycCase };
@@ -123,7 +139,8 @@ export function SecureSessionClient({ kycCase, token }: SecureSessionClientProps
   async function uploadIdDocument(file: File | null, documentType: string) {
     if (!file) return;
     const documentUrl = await readFileAsDataUrl(file);
-    const response = await fetch(`/api/whatsapp/session/${token}/document`, {
+    const sessionToken = encodeURIComponent(token);
+    const response = await fetch(`/api/whatsapp/session/${sessionToken}/document`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -132,13 +149,20 @@ export function SecureSessionClient({ kycCase, token }: SecureSessionClientProps
         fileName: file.name,
       }),
     });
-    const result = (await response.json()) as { case?: WhatsAppKycCase; ocr?: { confidence: number; documentType: string; fileName: string } };
+    const result = response.ok
+      ? ((await response.json()) as {
+          case?: WhatsAppKycCase;
+          ocr?: { confidence: number; documentType: string; fileName: string; extractedIdNumber?: string | null; matchedEnteredId?: boolean | null };
+        })
+      : { case: undefined, ocr: undefined };
     if (result.case) setSessionCase(result.case);
     if (result.ocr) {
       setIdUpload({
         fileName: result.ocr.fileName,
         documentType: result.ocr.documentType,
         confidence: result.ocr.confidence,
+        extractedIdNumber: result.ocr.extractedIdNumber ?? null,
+        matchedEnteredId: result.ocr.matchedEnteredId ?? null,
       });
     }
   }
@@ -411,8 +435,10 @@ export function SecureSessionClient({ kycCase, token }: SecureSessionClientProps
               <div className="mt-5 grid gap-3 md:grid-cols-2">
                 <InfoCard label="GPS" value={verificationReport.evidence.locationDescription} />
                 <InfoCard label="IP address" value={verificationReport.evidence.ipAddress ?? "Not captured"} />
-                <InfoCard label="Device" value={verificationReport.evidence.deviceDescription} />
+                <InfoCard label="ID OCR match" value={verificationReport.evidence.identityMatchedEnteredId === true ? "Matches entered ID" : verificationReport.evidence.identityMatchedEnteredId === false ? "Mismatch" : "Pending or unknown"} />
                 <InfoCard label="Proof document" value={verificationReport.evidence.proofOfAddressDocumentType ?? "Not captured"} />
+                <InfoCard label="Extracted ID" value={verificationReport.evidence.identityExtractedIdNumber ?? "Not captured"} />
+                <InfoCard label="Affidavit ID" value={verificationReport.evidence.affidavitExtractedIdNumber ?? "Not captured"} />
               </div>
 
               <div className="mt-5 rounded-2xl border border-[#d7e2ee] bg-[#f8fbfe] p-4">

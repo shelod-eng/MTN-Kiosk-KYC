@@ -216,7 +216,8 @@ export function StoreJourneySimulator() {
   async function captureLocation() {
     if (!caseItem?.secureSessionToken) return;
     await runStep("location", async () => {
-      await fetch(`/api/whatsapp/session/${caseItem.secureSessionToken}/location`, {
+      const sessionToken = encodeURIComponent(caseItem.secureSessionToken);
+      await fetch(`/api/whatsapp/session/${sessionToken}/location`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ latitude: -26.1076, longitude: 28.0567, accuracy: 9.4 }),
