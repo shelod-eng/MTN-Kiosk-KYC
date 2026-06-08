@@ -377,12 +377,15 @@ export function WhatsAppKycChatDemo() {
       setSelfiePreview(selfieImage);
       addMessage("customer", "Captured selfie from live camera.");
       const token = encodeURIComponent(caseItem.secureSessionToken);
-      await fetch(`/api/whatsapp/session/${token}/device`, {
+      const deviceResponse = await fetch(`/api/whatsapp/session/${token}/device`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(buildDeviceFingerprint()),
+        body: JSON.stringify({ ...buildDeviceFingerprint(), caseId: caseItem.id }),
       });
+      const devicePayload = (await deviceResponse.json().catch(() => null)) as { case?: WhatsAppKycCase } | null;
+      if (devicePayload?.case) applyCaseUpdate(devicePayload.case);
       const locationResult = await captureBrowserLocation(token);
+      if (locationResult.case) applyCaseUpdate(locationResult.case);
       const biometricResponse = await fetch("/api/whatsapp/biometrics/analyze", {
         method: "POST",
         headers: staffHeaders,
@@ -400,7 +403,7 @@ export function WhatsAppKycChatDemo() {
       setStep("verification");
       addMessage(
         "platform",
-        `Selfie verified against the uploaded ID. Liveness ${Math.round((biometricPayload.livenessScore ?? 0.91) * 100)}%, face match ${Math.round((biometricPayload.faceMatchScore ?? 0.89) * 100)}%. GPS ${locationResult.locationText}, tower ${locationResult.towerId ?? "pending"}, IP captured by session endpoint. Run final verification checks.`
+        `Selfie verified against the uploaded ID. Liveness ${Math.round((biometricPayload.livenessScore ?? 0.91) * 100)}%, face match ${Math.round((biometricPayload.faceMatchScore ?? 0.89) * 100)}%. GPS ${locationResult.locationText}, tower ${locationResult.towerId ?? "pending"}, IP ${biometricPayload.case?.deviceIntelligence?.ipAddress ?? devicePayload?.case?.deviceIntelligence?.ipAddress ?? "captured by session endpoint"}. Run final verification checks.`
       );
     });
   }
@@ -907,13 +910,15 @@ async function captureBrowserLocation(token: string) {
   });
   const payload = response.ok
     ? ((await response.json()) as {
+        case?: WhatsAppKycCase;
         what3words?: string;
         towerId?: string;
         location?: { latitude: number; longitude: number; accuracy?: number };
       })
-    : { what3words: undefined, towerId: undefined, location: coords };
+    : { case: undefined, what3words: undefined, towerId: undefined, location: coords };
   const location = payload.location ?? coords;
   return {
+    case: payload.case,
     locationText: `${location.latitude.toFixed(5)}, ${location.longitude.toFixed(5)}${payload.what3words ? ` / ${payload.what3words}` : ""}`,
     towerId: payload.towerId,
   };

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { captureDeviceIntelligence, getCaseBySessionToken } from "@/lib/whatsapp-store";
+import { captureDeviceIntelligence, getCase, getCaseBySessionToken } from "@/lib/whatsapp-store";
 
 type LocalRouteContext = {
   params: Promise<{ token: string }>;
@@ -18,22 +18,30 @@ function isValidPublicIp(ip: string | null | undefined): boolean {
   return false;
 }
 
+function getRequestIp(request: NextRequest) {
+  const forwardedFor = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim();
+  const vercelForwardedFor = request.headers.get("x-vercel-forwarded-for")?.split(",")[0]?.trim();
+  const realIp = request.headers.get("x-real-ip")?.trim();
+  const cloudflareIp = request.headers.get("cf-connecting-ip")?.trim();
+  const clientIp = request.headers.get("x-client-ip")?.trim();
+  const forwarded = request.headers.get("forwarded")?.match(/for="?([^";,]+)"?/i)?.[1];
+  const remoteAddr = typeof (request as unknown as { ip?: string }).ip === "string" ? (request as unknown as { ip: string }).ip : undefined;
+  const candidateIps = [forwardedFor, vercelForwardedFor, realIp, cloudflareIp, clientIp, forwarded, remoteAddr].filter(Boolean);
+  const validPublicIp = candidateIps.find((ip) => isValidPublicIp(ip));
+
+  return validPublicIp || candidateIps[0] || "local-dev";
+}
+
 export async function POST(request: NextRequest, context: LocalRouteContext) {
   const { token } = await context.params;
-  const kycCase = await getCaseBySessionToken(token);
+  const body = (await request.json()) as Record<string, unknown>;
+  const fallbackCaseId = typeof body.caseId === "string" ? body.caseId : "";
+  const kycCase = (await getCaseBySessionToken(token)) ?? (fallbackCaseId ? await getCase(fallbackCaseId) : null);
   if (!kycCase) {
     return NextResponse.json({ error: "Session not found or expired." }, { status: 404 });
   }
 
-  const body = (await request.json()) as Record<string, unknown>;
-  const forwardedFor = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim();
-  const realIp = request.headers.get("x-real-ip");
-  const remoteAddr = typeof (request as unknown as { ip?: string }).ip === "string" ? (request as unknown as { ip: string }).ip : undefined;
-  
-  // Validate and select the best available IP, filtering out localhost and invalid formats
-  const candidateIps = [forwardedFor, realIp, remoteAddr].filter(Boolean);
-  const validIp = candidateIps.find((ip) => ip && isValidPublicIp(ip));
-  const ipAddress = validIp || (forwardedFor || realIp || remoteAddr || "demo-local-ip");
+  const ipAddress = String(body.ipAddress ?? "") || getRequestIp(request);
   const updatedCase = await captureDeviceIntelligence(kycCase.id, {
     browserFingerprint: String(body.browserFingerprint ?? ""),
     ipAddress,

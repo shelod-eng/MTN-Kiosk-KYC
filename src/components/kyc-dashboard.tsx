@@ -154,10 +154,18 @@ export function KycDashboard() {
 
         {roleView === "Sponsor" && (
           <>
-            <section className="grid min-w-0 gap-5 xl:grid-cols-[1.2fr_1fr_1.1fr]">
+            <section className="grid min-w-0 gap-5 xl:grid-cols-[1fr_1fr_1.2fr]">
+              <Panel title="Decision Workflow">
+                <DecisionWorkflowPanel caseItem={selectedCase} />
+              </Panel>
+              <Panel title="Risk Breakdown">
+                <CaseRiskBreakdown caseItem={selectedCase} />
+              </Panel>
               <Panel title="Executive Case Outcomes" action={<CaseFilters active={filterView} onChange={setFilterView} />}>
                 <CaseTable cases={visibleCases} selectedCaseId={selectedCase?.id ?? ""} onSelect={setSelectedCaseId} loading={loading} />
               </Panel>
+            </section>
+            <section className="grid min-w-0 gap-5 xl:grid-cols-[1fr_1fr_1fr]">
               <Panel title="Risk & Decision Analysis">
                 <RiskPanel riskDistribution={riskDistribution} decisionDistribution={decisionDistribution} />
               </Panel>
@@ -182,19 +190,22 @@ export function KycDashboard() {
               <Panel title="Bulk Batch Processing">
                 <BulkPanel batch={selectedBatch} queueTotals={queueTotals} />
               </Panel>
+              <Panel title="Provider Conversion Funnel">
+                <ProviderFunnel cases={sortedCases} />
+              </Panel>
               <Panel title="Batch Queue">
                 <BatchTable batches={payload.bulkBatches} selectedBatchId={selectedBatch?.id ?? ""} onSelect={setSelectedBatchId} />
               </Panel>
+            </section>
+            <section className="grid min-w-0 gap-5 xl:grid-cols-[1fr_1fr_1fr]">
               <Panel title="Provider Performance">
                 <ProviderPanel cases={sortedCases} batches={payload.bulkBatches} />
               </Panel>
-            </section>
-            <section className="grid min-w-0 gap-5 lg:grid-cols-[1.2fr_1fr]">
               <Panel title="MSISDN Row Outcomes">
                 <MnoRowsPanel batch={selectedBatch} cases={sortedCases} />
               </Panel>
-              <Panel title="Queue Status">
-                <QueuePanel queue={payload.queue} />
+              <Panel title="Queue Health">
+                <QueueHealthPanel queue={payload.queue} queueTotals={queueTotals} />
               </Panel>
             </section>
           </>
@@ -234,6 +245,17 @@ export function KycDashboard() {
             <section className="grid min-w-0 gap-5 xl:grid-cols-[1fr_1fr_1fr]">
               <Panel title="Audit Trail" action={<button type="button" onClick={() => downloadCasesCsv(visibleCases)} className="rounded-md bg-[#2b3443] px-3 py-2 text-xs font-bold text-white">Export CSV</button>}>
                 <AuditPanel caseItem={selectedCase} roleView={roleView} />
+              </Panel>
+              <Panel title="Audit Trail Timeline">
+                <AuditTimeline caseItem={selectedCase} />
+              </Panel>
+              <Panel title="Queue Health">
+                <QueueHealthPanel queue={payload.queue} queueTotals={queueTotals} />
+              </Panel>
+            </section>
+            <section className="grid min-w-0 gap-5 xl:grid-cols-[1fr_1fr_1fr]">
+              <Panel title="Uploaded Evidence Gallery">
+                <EvidenceGallery caseItem={selectedCase} />
               </Panel>
               <Panel title="System Diagnostics">
                 <AdminDiagnostics caseItem={selectedCase} payload={payload} queueTotals={queueTotals} />
@@ -374,6 +396,55 @@ function BatchTable({ batches, selectedBatchId, onSelect }: { batches: BulkBatch
   );
 }
 
+function DecisionWorkflowPanel({ caseItem }: { caseItem: WhatsAppKycCase | null }) {
+  const proof = caseItem?.verification.proofOfAddressDocument;
+  const hasAffidavit = Boolean(caseItem?.affidavit);
+  const activePath = proof?.accepted ? "valid" : proof?.reviewReason ? "expired" : hasAffidavit ? "affidavit" : "missing";
+  const steps = [
+    { key: "valid", label: "Valid proof < 3 months", outcome: "Approve path", tone: "pass" },
+    { key: "expired", label: "Expired proof > 3 months", outcome: "Affidavit + Review", tone: "review" },
+    { key: "missing", label: "No proof of address", outcome: "Affidavit mandatory", tone: "fail" },
+  ] as const;
+
+  return (
+    <div className="space-y-3">
+      {steps.map((step) => (
+        <div key={step.key} className={`grid grid-cols-[1fr_110px] items-center gap-3 rounded-md border p-3 ${activePath === step.key ? "border-[#60d99c] bg-[#17362f]" : "border-[#273341] bg-[#0e151d]"}`}>
+          <div>
+            <p className="font-semibold text-white">{step.label}</p>
+            <p className="mt-1 text-xs text-[#9eb0bd]">{step.outcome}</p>
+          </div>
+          <span className={`rounded px-3 py-2 text-center text-xs font-black ${workflowTone(step.tone)}`}>{step.tone === "pass" ? "Proceed" : step.tone === "review" ? "Review" : "Reject"}</span>
+        </div>
+      ))}
+      <p className="text-xs leading-5 text-[#9eb0bd]">
+        Current path: <span className="font-semibold text-[#eef4f8]">{activePath === "valid" ? "valid proof accepted" : activePath === "expired" ? "expired proof requires affidavit fallback" : activePath === "affidavit" ? "affidavit fallback captured" : "proof missing, affidavit required"}</span>.
+      </p>
+    </div>
+  );
+}
+
+function CaseRiskBreakdown({ caseItem }: { caseItem: WhatsAppKycCase | null }) {
+  if (!caseItem) return <EmptyPanelText text="Select a case to inspect risk factors." />;
+  const factors = buildRiskFactors(caseItem);
+  return (
+    <div className="space-y-3">
+      {factors.map((factor) => (
+        <div key={factor.label}>
+          <div className="mb-1 flex items-center justify-between gap-3 text-sm">
+            <span className="font-semibold text-[#dce6ee]">{factor.label}</span>
+            <span className={factor.score >= 80 ? "text-[#80f0b2]" : factor.score >= 60 ? "text-[#ffd76a]" : "text-[#ff8b75]"}>{factor.score}%</span>
+          </div>
+          <div className="h-3 overflow-hidden rounded-full bg-[#2a3442]">
+            <div className="h-full rounded-full" style={{ width: `${Math.max(4, factor.score)}%`, background: factor.color }} />
+          </div>
+          {factor.reason && <p className="mt-1 text-xs text-[#91a6b7]">{factor.reason}</p>}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function IdentityPanel({ caseItem }: { caseItem: WhatsAppKycCase | null }) {
   if (!caseItem) return <EmptyPanelText text="Select a case to inspect identity evidence." />;
   const idValidation = caseItem.verification.idValidation;
@@ -443,6 +514,73 @@ function AuditPanel({ caseItem, roleView }: { caseItem: WhatsAppKycCase | null; 
           </div>
         </div>
       ))}
+    </div>
+  );
+}
+
+function AuditTimeline({ caseItem }: { caseItem: WhatsAppKycCase | null }) {
+  if (!caseItem) return <EmptyPanelText text="Select a case to inspect audit timeline." />;
+  const importantActions = ["otp_sent", "otp_verified", "id_checksum_passed", "document_uploaded", "proof_uploaded", "proof_expired", "affidavit_requested", "affidavit_uploaded", "selfie_verified", "final_verification_complete"];
+  const events = caseItem.auditTrail
+    .filter((event) => importantActions.includes(event.action))
+    .sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+
+  if (!events.length) return <EmptyPanelText text="No timeline events captured yet." />;
+
+  return (
+    <div className="relative space-y-0 pl-5">
+      <div className="absolute bottom-2 left-[7px] top-2 w-px bg-[#3a4655]" />
+      {events.map((event) => (
+        <div key={event.id} className="relative border-b border-[#263240] py-3 pl-4">
+          <span className="absolute left-[-22px] top-4 size-3 rounded-full bg-[#d9e5ee] ring-4 ring-[#111923]" />
+          <div className="flex items-center justify-between gap-3">
+            <p className="font-semibold text-white">{humanizeAction(event.action)}</p>
+            <p className="font-mono text-xs text-[#9eb0bd]">{formatTime(event.timestamp)}</p>
+          </div>
+          <p className="mt-1 text-xs text-[#8ea4b5]">{formatUtc(event.timestamp)}</p>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function EvidenceGallery({ caseItem }: { caseItem: WhatsAppKycCase | null }) {
+  if (!caseItem) return <EmptyPanelText text="Select a case to inspect uploaded photos." />;
+  const media = [
+    { label: "ID document", value: caseItem.documentUrls.idDocument },
+    { label: "Selfie", value: caseItem.documentUrls.selfie },
+    { label: "Proof of address", value: caseItem.documentUrls.proofOfAddress },
+    { label: "Affidavit image", value: caseItem.documentUrls.affidavitImage },
+  ].filter((item) => Boolean(item.value));
+
+  if (!media.length) return <EmptyPanelText text="No uploaded evidence media is stored on this case yet." />;
+
+  return (
+    <div className="grid gap-3 sm:grid-cols-2">
+      {media.map((item) => (
+        <EvidencePreview key={item.label} label={item.label} value={item.value ?? ""} />
+      ))}
+    </div>
+  );
+}
+
+function EvidencePreview({ label, value }: { label: string; value: string }) {
+  const isImage = value.startsWith("data:image/");
+  const isPdf = value.startsWith("data:application/pdf");
+  return (
+    <div className="overflow-hidden rounded-md border border-[#263240] bg-[#0e151d]">
+      <div className="border-b border-[#263240] px-3 py-2 text-sm font-semibold text-white">{label}</div>
+      {isImage ? (
+        // Browser-selected evidence is stored as a data URL in the prototype case payload.
+        // eslint-disable-next-line @next/next/no-img-element
+        <img src={value} alt={label} className="h-40 w-full object-cover" />
+      ) : isPdf ? (
+        <a href={value} target="_blank" rel="noreferrer" className="block px-3 py-8 text-center text-sm font-semibold text-[#8dd6ff]">
+          Open PDF evidence
+        </a>
+      ) : (
+        <p className="px-3 py-8 text-center text-sm text-[#9eb0bd]">Stored evidence URL</p>
+      )}
     </div>
   );
 }
@@ -524,6 +662,29 @@ function SponsorExportPanel({ cases, generatedAt }: { cases: WhatsAppKycCase[]; 
   );
 }
 
+function ProviderFunnel({ cases }: { cases: WhatsAppKycCase[] }) {
+  const stages = [
+    { label: "Pending", value: cases.filter((caseItem) => !caseItem.risk && !isApprovedCase(caseItem) && !isRejectedCase(caseItem)).length, color: "#5176d6" },
+    { label: "Review", value: cases.filter((caseItem) => caseItem.status === "manual_review" || caseItem.risk?.decision === "REVIEW").length, color: "#e1ae28" },
+    { label: "Approved", value: cases.filter(isApprovedCase).length, color: "#77c34f" },
+    { label: "Failed", value: cases.filter(isRejectedCase).length, color: "#ef4444" },
+  ];
+  const max = Math.max(1, ...stages.map((stage) => stage.value));
+
+  return (
+    <div className="space-y-3">
+      {stages.map((stage, index) => (
+        <div key={stage.label} className="mx-auto text-center" style={{ width: `${Math.max(48, 100 - index * 12)}%` }}>
+          <div className="rounded-md px-3 py-3 font-black text-white shadow-[0_10px_24px_rgba(0,0,0,0.28)]" style={{ background: stage.color, opacity: 0.72 + (stage.value / max) * 0.28 }}>
+            {stage.label}: {stage.value}
+          </div>
+        </div>
+      ))}
+      <p className="text-xs leading-5 text-[#9eb0bd]">Conversion view helps MNOs compare campaign drop-off from queued cases through review and final decision.</p>
+    </div>
+  );
+}
+
 function ProviderPanel({ cases, batches }: { cases: WhatsAppKycCase[]; batches: BulkBatch[] }) {
   const providers = ["MTN", "Vodacom", "Cell C"];
   return (
@@ -579,6 +740,39 @@ function MnoRowsPanel({ batch, cases }: { batch: BulkBatch | null; cases: WhatsA
           })}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+function QueueHealthPanel({ queue, queueTotals }: { queue: QueueSnapshot; queueTotals: { waiting: number; active: number; completed: number; failed: number } }) {
+  if (!queue.configured || queue.queues.length === 0) {
+    return (
+      <div className="grid gap-3 sm:grid-cols-2">
+        <MiniStat label="OTP Jobs" value={`${queueTotals.completed} done`} color="#9ee7ff" />
+        <MiniStat label="Verification Jobs" value={`${queueTotals.active} active`} color="#80f0b2" />
+        <MiniStat label="Orchestration Jobs" value={`${queueTotals.waiting} queued`} color="#ffd76a" />
+        <MiniStat label="Failed Jobs" value={String(queueTotals.failed)} color="#ff745c" />
+        <p className="sm:col-span-2 text-xs leading-5 text-[#9eb0bd]">Redis/BullMQ is not configured in this environment, so this is a prototype queue snapshot.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="grid gap-3">
+      {queue.queues.map((entry) => (
+        <div key={entry.key} className="rounded-md border border-[#263240] bg-[#0e151d] p-3">
+          <div className="flex items-center justify-between gap-3">
+            <p className="font-semibold text-white">{entry.name}</p>
+            <p className="text-xs text-[#ff8b75]">{entry.counts.failed ?? 0} failed</p>
+          </div>
+          <div className="mt-3 grid grid-cols-4 gap-2 text-xs">
+            <MiniStat label="Waiting" value={String(entry.counts.waiting ?? 0)} color="#ffd76a" />
+            <MiniStat label="Active" value={String(entry.counts.active ?? 0)} color="#8dd6ff" />
+            <MiniStat label="Done" value={String(entry.counts.completed ?? 0)} color="#80f0b2" />
+            <MiniStat label="Failed" value={String(entry.counts.failed ?? 0)} color="#ff745c" />
+          </div>
+        </div>
+      ))}
     </div>
   );
 }
@@ -674,6 +868,67 @@ function getProofStatus(caseItem: WhatsAppKycCase): { label: string; status: "pa
   }
 
   return { label: "Pending", status: "review" };
+}
+
+function buildRiskFactors(caseItem: WhatsAppKycCase) {
+  const idCheckScore = caseItem.verification.idValidation?.isValid ? 90 : 35;
+  const identity = caseItem.verification.identityDocument;
+  const ocrScore = identity
+    ? identity.matchedEnteredId === false
+      ? 45
+      : Math.round(identity.ocrConfidence * 100)
+    : 0;
+  const selfieScore = Math.round((((caseItem.verification.livenessScore ?? 0) + (caseItem.verification.faceMatchScore ?? 0)) / 2) * 100);
+  const proof = caseItem.verification.proofOfAddressDocument;
+  const proofScore = proof?.accepted
+    ? Math.round(proof.simulatedOcrScore * 100)
+    : caseItem.affidavit
+      ? Math.round((caseItem.affidavit.aiValidationScore ?? 0.76) * 100)
+      : proof
+        ? Math.round(proof.simulatedOcrScore * 100)
+        : 0;
+  const hasGps = Boolean(caseItem.geoCapture || caseItem.residenceEvidence?.gpsCoordinates);
+  const hasTower = Boolean(caseItem.residenceEvidence?.towerId || caseItem.geoCapture?.towerId || caseItem.staffInitiation.bulkCampaign?.towerId);
+  const locationScore = hasGps && hasTower ? 92 : hasGps ? 78 : hasTower ? 58 : 0;
+
+  return [
+    {
+      label: "ID checksum",
+      score: idCheckScore,
+      color: idCheckScore >= 80 ? "#5dbd74" : "#ef4444",
+      reason: caseItem.verification.idValidation?.isValid ? "Valid South African ID checksum." : "ID checksum is pending or failed.",
+    },
+    {
+      label: "OCR match",
+      score: ocrScore,
+      color: ocrScore >= 80 ? "#5dbd74" : ocrScore >= 60 ? "#ffc84a" : "#ef4444",
+      reason: identity?.matchedEnteredId === false ? "Uploaded ID does not match entered ID." : identity ? "Identity document OCR captured." : "Identity document upload pending.",
+    },
+    {
+      label: "Proof / affidavit",
+      score: proofScore,
+      color: proofScore >= 80 && proof?.accepted ? "#5dbd74" : proofScore >= 60 || caseItem.affidavit ? "#ffc84a" : "#ef4444",
+      reason: proof?.reviewReason ?? (caseItem.affidavit ? "Affidavit fallback captured for RICA review." : proof?.accepted ? "Proof of address accepted." : "Proof or affidavit pending."),
+    },
+    {
+      label: "Selfie match",
+      score: selfieScore,
+      color: selfieScore >= 82 ? "#5dbd74" : selfieScore >= 65 ? "#ffc84a" : "#ef4444",
+      reason: selfieScore ? "Selfie/liveness evidence captured." : "Selfie and liveness pending.",
+    },
+    {
+      label: "GPS / tower",
+      score: locationScore,
+      color: locationScore >= 80 ? "#5dbd74" : locationScore >= 55 ? "#ffc84a" : "#ef4444",
+      reason: hasGps ? "GPS evidence captured." : hasTower ? "Tower evidence is provisional and flags review." : "GPS or tower evidence missing.",
+    },
+  ];
+}
+
+function workflowTone(tone: "pass" | "review" | "fail") {
+  if (tone === "pass") return "bg-[#67c44a] text-[#071118]";
+  if (tone === "review") return "bg-[#ffc84a] text-[#151006]";
+  return "bg-[#ef4444] text-white";
 }
 
 function InfoLine({ label, value, strong, status }: { label: string; value: string; strong?: boolean; status?: "pass" | "review" }) {

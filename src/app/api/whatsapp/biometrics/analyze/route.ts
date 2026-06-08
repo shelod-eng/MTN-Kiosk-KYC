@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { runBiometricProvider } from "@/lib/provider-adapters";
-import { updateFromWebhook } from "@/lib/whatsapp-store";
+import { captureDeviceIntelligence, updateFromWebhook } from "@/lib/whatsapp-store";
 
 export async function POST(request: NextRequest) {
   const body = (await request.json()) as {
@@ -17,6 +17,10 @@ export async function POST(request: NextRequest) {
     caseId: body.caseId,
     selfieUrl: body.selfieUrl,
     idDocumentUrl: body.idDocumentUrl,
+  });
+
+  await captureDeviceIntelligence(body.caseId, {
+    ipAddress: getRequestIp(request),
   });
 
   const updatedCase = await updateFromWebhook({
@@ -42,4 +46,16 @@ export async function POST(request: NextRequest) {
     faceMatchScore: result.faceMatchScore,
     status: updatedCase.status,
   });
+}
+
+function getRequestIp(request: NextRequest) {
+  const forwardedFor = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim();
+  const vercelForwardedFor = request.headers.get("x-vercel-forwarded-for")?.split(",")[0]?.trim();
+  const realIp = request.headers.get("x-real-ip")?.trim();
+  const cloudflareIp = request.headers.get("cf-connecting-ip")?.trim();
+  const clientIp = request.headers.get("x-client-ip")?.trim();
+  const forwarded = request.headers.get("forwarded")?.match(/for="?([^";,]+)"?/i)?.[1];
+  const requestIp = typeof (request as unknown as { ip?: string }).ip === "string" ? (request as unknown as { ip: string }).ip : undefined;
+
+  return forwardedFor || vercelForwardedFor || realIp || cloudflareIp || clientIp || forwarded || requestIp || "local-dev";
 }
