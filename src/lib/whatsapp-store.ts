@@ -75,6 +75,23 @@ function getMemoryStore() {
   return globalStore.__whatsappKycStore;
 }
 
+function saveCaseToMemory(kycCase: WhatsAppKycCase) {
+  const store = getMemoryStore();
+  store.cases.set(kycCase.id, kycCase);
+  if (kycCase.secureSessionToken && kycCase.secureSessionExpiresAt) {
+    store.sessions.set(kycCase.secureSessionToken, {
+      caseId: kycCase.id,
+      expiresAt: kycCase.secureSessionExpiresAt,
+    });
+  }
+  return kycCase;
+}
+
+function saveBulkBatchToMemory(result: BulkCampaignResult) {
+  getMemoryStore().bulkBatches.set(result.batchId, result);
+  return result;
+}
+
 export async function recordInboundWebhookEvent(event: Omit<InboundWebhookEvent, "id" | "receivedAt"> & { id?: string; receivedAt?: string; caseId?: string; caseReference?: string }) {
   const store = getMemoryStore();
   const nextEvent: InboundWebhookEvent = {
@@ -180,86 +197,83 @@ function mapCaseRow(row: Record<string, unknown>) {
 
 async function persistCase(kycCase: WhatsAppKycCase) {
   if (!hasSupabaseConfig()) {
-    const store = getMemoryStore();
-    store.cases.set(kycCase.id, kycCase);
-    if (kycCase.secureSessionToken && kycCase.secureSessionExpiresAt) {
-      store.sessions.set(kycCase.secureSessionToken, {
-        caseId: kycCase.id,
-        expiresAt: kycCase.secureSessionExpiresAt,
-      });
-    }
-    return kycCase;
+    return saveCaseToMemory(kycCase);
   }
 
-  await supabaseRequest("kyc_cases?on_conflict=id", {
-    method: "POST",
-    body: JSON.stringify([
-      {
-        id: kycCase.id,
-        case_reference: kycCase.reference,
-        tenant: kycCase.tenant,
-        channel: kycCase.channel,
-        status: kycCase.status,
-        customer_phone_number: normalizePhoneNumber(kycCase.applicant.phoneNumber ?? kycCase.staffInitiation.customerPhoneNumber),
-        staff_id: kycCase.staffInitiation.staffId,
-        staff_name: kycCase.staffInitiation.staffName,
-        staff_role: kycCase.staffInitiation.staffRole,
-        delivery_method: kycCase.staffInitiation.deliveryMethod,
-        secure_session_token: kycCase.secureSessionToken ?? null,
-        secure_session_expires_at: kycCase.secureSessionExpiresAt ?? null,
-        risk_score: kycCase.risk?.score ?? null,
-        risk_band: kycCase.risk?.band ?? null,
-        decision: kycCase.risk?.decision ?? null,
-        gps_coordinates: kycCase.residenceEvidence?.gpsCoordinates ?? null,
-        what3words_id: kycCase.residenceEvidence?.what3wordsId ?? kycCase.geoCapture?.what3words ?? null,
-        tower_id: kycCase.residenceEvidence?.towerId ?? kycCase.staffInitiation.bulkCampaign?.towerId ?? null,
-        location_evidence: kycCase.residenceEvidence?.locationEvidence ?? kycCase.staffInitiation.bulkCampaign?.locationEvidence ?? null,
-        affidavit_video_url: kycCase.residenceEvidence?.affidavitVideoUrl ?? kycCase.documentUrls.affidavitVideo ?? null,
-        residence_evidence_captured_at: kycCase.residenceEvidence?.capturedAt ?? kycCase.geoCapture?.capturedAt ?? kycCase.affidavit?.capturedAt ?? null,
-        updated_at: kycCase.updatedAt,
-        case_payload: kycCase,
-      },
-    ]),
-  });
-
-  const idValidation = kycCase.applicant.idNumber ? validateSouthAfricanIdNumber(kycCase.applicant.idNumber) : null;
-  await supabaseRequest("kyc_applicants?on_conflict=id", {
-    method: "POST",
-    body: JSON.stringify([
-      {
-        id: `applicant_${kycCase.id}`,
-        case_id: kycCase.id,
-        full_name: kycCase.applicant.fullName ?? null,
-        id_number: kycCase.applicant.idNumber ?? null,
-        phone_number: kycCase.applicant.phoneNumber ?? kycCase.staffInitiation.customerPhoneNumber,
-        consent_given: Boolean(kycCase.applicant.consentGiven),
-        consent_captured_at: kycCase.consentCapturedAt ?? null,
-        date_of_birth: idValidation?.dateOfBirth ?? null,
-        citizenship: idValidation?.citizenship ?? null,
-        gender: idValidation?.gender ?? null,
-        updated_at: kycCase.updatedAt,
-      },
-    ]),
-  });
-
-  if (kycCase.auditTrail.length > 0) {
-    await supabaseRequest("kyc_audit_logs?on_conflict=id", {
+  try {
+    await supabaseRequest("kyc_cases?on_conflict=id", {
       method: "POST",
-      body: JSON.stringify(
-        kycCase.auditTrail.map((entry) => ({
-          id: entry.id,
-          case_id: entry.caseId,
-          actor_role: entry.actorRole,
-          actor_id: entry.actorId,
-          action: entry.action,
-          details: {
-            ...entry.details,
-            eventTimestampUtc: entry.timestamp,
-            immutableHash: entry.immutableHash,
-          },
-        }))
-      ),
+      body: JSON.stringify([
+        {
+          id: kycCase.id,
+          case_reference: kycCase.reference,
+          tenant: kycCase.tenant,
+          channel: kycCase.channel,
+          status: kycCase.status,
+          customer_phone_number: normalizePhoneNumber(kycCase.applicant.phoneNumber ?? kycCase.staffInitiation.customerPhoneNumber),
+          staff_id: kycCase.staffInitiation.staffId,
+          staff_name: kycCase.staffInitiation.staffName,
+          staff_role: kycCase.staffInitiation.staffRole,
+          delivery_method: kycCase.staffInitiation.deliveryMethod,
+          secure_session_token: kycCase.secureSessionToken ?? null,
+          secure_session_expires_at: kycCase.secureSessionExpiresAt ?? null,
+          risk_score: kycCase.risk?.score ?? null,
+          risk_band: kycCase.risk?.band ?? null,
+          decision: kycCase.risk?.decision ?? null,
+          gps_coordinates: kycCase.residenceEvidence?.gpsCoordinates ?? null,
+          what3words_id: kycCase.residenceEvidence?.what3wordsId ?? kycCase.geoCapture?.what3words ?? null,
+          tower_id: kycCase.residenceEvidence?.towerId ?? kycCase.staffInitiation.bulkCampaign?.towerId ?? null,
+          location_evidence: kycCase.residenceEvidence?.locationEvidence ?? kycCase.staffInitiation.bulkCampaign?.locationEvidence ?? null,
+          affidavit_video_url: kycCase.residenceEvidence?.affidavitVideoUrl ?? kycCase.documentUrls.affidavitVideo ?? null,
+          residence_evidence_captured_at: kycCase.residenceEvidence?.capturedAt ?? kycCase.geoCapture?.capturedAt ?? kycCase.affidavit?.capturedAt ?? null,
+          updated_at: kycCase.updatedAt,
+          case_payload: kycCase,
+        },
+      ]),
     });
+
+    const idValidation = kycCase.applicant.idNumber ? validateSouthAfricanIdNumber(kycCase.applicant.idNumber) : null;
+    await supabaseRequest("kyc_applicants?on_conflict=id", {
+      method: "POST",
+      body: JSON.stringify([
+        {
+          id: `applicant_${kycCase.id}`,
+          case_id: kycCase.id,
+          full_name: kycCase.applicant.fullName ?? null,
+          id_number: kycCase.applicant.idNumber ?? null,
+          phone_number: kycCase.applicant.phoneNumber ?? kycCase.staffInitiation.customerPhoneNumber,
+          consent_given: Boolean(kycCase.applicant.consentGiven),
+          consent_captured_at: kycCase.consentCapturedAt ?? null,
+          date_of_birth: idValidation?.dateOfBirth ?? null,
+          citizenship: idValidation?.citizenship ?? null,
+          gender: idValidation?.gender ?? null,
+          updated_at: kycCase.updatedAt,
+        },
+      ]),
+    });
+
+    if (kycCase.auditTrail.length > 0) {
+      await supabaseRequest("kyc_audit_logs?on_conflict=id", {
+        method: "POST",
+        body: JSON.stringify(
+          kycCase.auditTrail.map((entry) => ({
+            id: entry.id,
+            case_id: entry.caseId,
+            actor_role: entry.actorRole,
+            actor_id: entry.actorId,
+            action: entry.action,
+            details: {
+              ...entry.details,
+              eventTimestampUtc: entry.timestamp,
+              immutableHash: entry.immutableHash,
+            },
+          }))
+        ),
+      });
+    }
+  } catch (error) {
+    console.warn("[whatsapp-store] Supabase case persistence unavailable, using memory fallback", error);
+    return saveCaseToMemory(kycCase);
   }
 
   return kycCase;
@@ -270,8 +284,13 @@ async function loadCase(caseId: string) {
     return getMemoryStore().cases.get(caseId) ?? null;
   }
 
-  const rows = (await supabaseRequest(`kyc_cases?select=case_payload&id=eq.${encodeURIComponent(caseId)}`)) as Array<Record<string, unknown>>;
-  return rows[0] ? mapCaseRow(rows[0]) : null;
+  try {
+    const rows = (await supabaseRequest(`kyc_cases?select=case_payload&id=eq.${encodeURIComponent(caseId)}`)) as Array<Record<string, unknown>>;
+    return rows[0] ? mapCaseRow(rows[0]) : null;
+  } catch (error) {
+    console.warn("[whatsapp-store] Supabase case read unavailable, using memory fallback", error);
+    return getMemoryStore().cases.get(caseId) ?? null;
+  }
 }
 
 async function loadCaseBySession(sessionToken: string) {
@@ -285,14 +304,22 @@ async function loadCaseBySession(sessionToken: string) {
     return getMemoryStore().cases.get(session.caseId) ?? null;
   }
 
-  const rows = (await supabaseRequest(
-    `kyc_cases?select=case_payload,secure_session_expires_at&secure_session_token=eq.${encodeURIComponent(sessionToken)}`
-  )) as Array<Record<string, unknown>>;
-  const first = rows[0];
-  if (!first) return null;
-  const expiresAt = String(first.secure_session_expires_at ?? "");
-  if (expiresAt && new Date(expiresAt).getTime() < Date.now()) return null;
-  return mapCaseRow(first);
+  try {
+    const rows = (await supabaseRequest(
+      `kyc_cases?select=case_payload,secure_session_expires_at&secure_session_token=eq.${encodeURIComponent(sessionToken)}`
+    )) as Array<Record<string, unknown>>;
+    const first = rows[0];
+    if (!first) return null;
+    const expiresAt = String(first.secure_session_expires_at ?? "");
+    if (expiresAt && new Date(expiresAt).getTime() < Date.now()) return null;
+    return mapCaseRow(first);
+  } catch (error) {
+    console.warn("[whatsapp-store] Supabase session read unavailable, using memory fallback", error);
+    const session = getMemoryStore().sessions.get(sessionToken);
+    if (!session) return getMemoryStore().cases.get(payload.caseId) ?? null;
+    if (new Date(session.expiresAt).getTime() < Date.now()) return null;
+    return getMemoryStore().cases.get(session.caseId) ?? null;
+  }
 }
 
 export async function listCases() {
@@ -300,8 +327,13 @@ export async function listCases() {
     return Array.from(getMemoryStore().cases.values()).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   }
 
-  const rows = (await supabaseRequest("kyc_cases?select=case_payload&order=updated_at.desc")) as Array<Record<string, unknown>>;
-  return rows.map(mapCaseRow).filter(Boolean) as WhatsAppKycCase[];
+  try {
+    const rows = (await supabaseRequest("kyc_cases?select=case_payload&order=updated_at.desc")) as Array<Record<string, unknown>>;
+    return rows.map(mapCaseRow).filter(Boolean) as WhatsAppKycCase[];
+  } catch (error) {
+    console.warn("[whatsapp-store] Supabase case list unavailable, using memory fallback", error);
+    return Array.from(getMemoryStore().cases.values()).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  }
 }
 
 export async function listBulkBatches() {
@@ -309,10 +341,18 @@ export async function listBulkBatches() {
     return Array.from(getMemoryStore().bulkBatches.values()).sort((a, b) => b.receivedAt.localeCompare(a.receivedAt));
   }
 
-  const [batchRows, bulkRows] = (await Promise.all([
-    supabaseRequest("kyc_bulk_batches?select=*&order=received_at.desc"),
-    supabaseRequest("kyc_bulk_rows?select=*&order=created_at.desc"),
-  ])) as [Array<Record<string, unknown>>, Array<Record<string, unknown>>];
+  let batchRows: Array<Record<string, unknown>>;
+  let bulkRows: Array<Record<string, unknown>>;
+
+  try {
+    [batchRows, bulkRows] = (await Promise.all([
+      supabaseRequest("kyc_bulk_batches?select=*&order=received_at.desc"),
+      supabaseRequest("kyc_bulk_rows?select=*&order=created_at.desc"),
+    ])) as [Array<Record<string, unknown>>, Array<Record<string, unknown>>];
+  } catch (error) {
+    console.warn("[whatsapp-store] Supabase bulk list unavailable, using memory fallback", error);
+    return Array.from(getMemoryStore().bulkBatches.values()).sort((a, b) => b.receivedAt.localeCompare(a.receivedAt));
+  }
 
   return batchRows.map((batch) => ({
     id: String(batch.id ?? ""),
@@ -352,58 +392,62 @@ export async function createCase(input: StaffInitiationPayload) {
 
 export async function persistBulkBatch(result: BulkCampaignResult, rows: BulkCampaignRow[]) {
   if (!hasSupabaseConfig()) {
-    getMemoryStore().bulkBatches.set(result.batchId, result);
-    return result;
+    return saveBulkBatchToMemory(result);
   }
 
-  await supabaseRequest("kyc_bulk_batches?on_conflict=id", {
-    method: "POST",
-    body: JSON.stringify([
-      {
-        id: result.batchId,
-        batch_reference: result.batchReference,
-        provider: result.provider,
-        source: result.source,
-        source_file_name: result.sourceFileName,
-        status: result.status,
-        received_at: result.receivedAt,
-        row_count: result.rowCount,
-        valid_count: result.validCount,
-        error_count: result.errorCount,
-        provider_report_csv: result.providerReport,
-        metadata: {
-          errors: result.errors,
-          caseReferences: result.cases.map((kycCase) => kycCase.reference),
-        },
-      },
-    ]),
-  });
-
-  if (rows.length > 0) {
-    await supabaseRequest("kyc_bulk_rows?on_conflict=batch_id,row_number", {
+  try {
+    await supabaseRequest("kyc_bulk_batches?on_conflict=id", {
       method: "POST",
-      body: JSON.stringify(
-        rows.map((row) => {
-          const kycCase = result.cases.find((candidate) => candidate.staffInitiation.bulkCampaign?.rowNumber === row.rowNumber);
-          return {
-            id: `bulk_row_${result.batchId}_${row.rowNumber}`,
-            batch_id: result.batchId,
-            row_number: row.rowNumber,
-            full_name: row.fullName,
-            id_number: row.idNumber,
-            phone_number: row.phoneNumber,
-            campaign_id: row.campaignId ?? null,
-            segment: row.segment ?? null,
-            provider_reference: row.providerReference ?? null,
-            tower_id: row.towerId ?? null,
-            location_evidence: row.locationEvidence ?? null,
-            case_id: kycCase?.id ?? null,
-            status: kycCase ? "created" : "failed",
-            error_message: null,
-          };
-        })
-      ),
+      body: JSON.stringify([
+        {
+          id: result.batchId,
+          batch_reference: result.batchReference,
+          provider: result.provider,
+          source: result.source,
+          source_file_name: result.sourceFileName,
+          status: result.status,
+          received_at: result.receivedAt,
+          row_count: result.rowCount,
+          valid_count: result.validCount,
+          error_count: result.errorCount,
+          provider_report_csv: result.providerReport,
+          metadata: {
+            errors: result.errors,
+            caseReferences: result.cases.map((kycCase) => kycCase.reference),
+          },
+        },
+      ]),
     });
+
+    if (rows.length > 0) {
+      await supabaseRequest("kyc_bulk_rows?on_conflict=batch_id,row_number", {
+        method: "POST",
+        body: JSON.stringify(
+          rows.map((row) => {
+            const kycCase = result.cases.find((candidate) => candidate.staffInitiation.bulkCampaign?.rowNumber === row.rowNumber);
+            return {
+              id: `bulk_row_${result.batchId}_${row.rowNumber}`,
+              batch_id: result.batchId,
+              row_number: row.rowNumber,
+              full_name: row.fullName,
+              id_number: row.idNumber,
+              phone_number: row.phoneNumber,
+              campaign_id: row.campaignId ?? null,
+              segment: row.segment ?? null,
+              provider_reference: row.providerReference ?? null,
+              tower_id: row.towerId ?? null,
+              location_evidence: row.locationEvidence ?? null,
+              case_id: kycCase?.id ?? null,
+              status: kycCase ? "created" : "failed",
+              error_message: null,
+            };
+          })
+        ),
+      });
+    }
+  } catch (error) {
+    console.warn("[whatsapp-store] Supabase bulk persistence unavailable, using memory fallback", error);
+    return saveBulkBatchToMemory(result);
   }
 
   return result;
@@ -440,10 +484,23 @@ export async function findCaseByPhoneNumber(phoneNumber: string) {
     return null;
   }
 
-  const rows = (await supabaseRequest(
-    `kyc_cases?select=case_payload&customer_phone_number=eq.${encodeURIComponent(normalizedPhone)}`
-  )) as Array<Record<string, unknown>>;
-  return rows[0] ? mapCaseRow(rows[0]) : null;
+  try {
+    const rows = (await supabaseRequest(
+      `kyc_cases?select=case_payload&customer_phone_number=eq.${encodeURIComponent(normalizedPhone)}`
+    )) as Array<Record<string, unknown>>;
+    return rows[0] ? mapCaseRow(rows[0]) : null;
+  } catch (error) {
+    console.warn("[whatsapp-store] Supabase phone lookup unavailable, using memory fallback", error);
+    for (const candidate of getMemoryStore().cases.values()) {
+      if (
+        normalizePhoneNumber(candidate.staffInitiation.customerPhoneNumber) === normalizedPhone ||
+        normalizePhoneNumber(candidate.applicant.phoneNumber ?? "") === normalizedPhone
+      ) {
+        return candidate;
+      }
+    }
+    return null;
+  }
 }
 
 export async function createCaseSession(caseId: string) {
