@@ -41,7 +41,8 @@ export async function POST(request: NextRequest, context: LocalRouteContext) {
     return NextResponse.json({ error: "Session not found or expired." }, { status: 404 });
   }
 
-  const ipAddress = String(body.ipAddress ?? "") || getRequestIp(request);
+  const suppliedIp = typeof body.ipAddress === "string" ? body.ipAddress.trim() : "";
+  const ipAddress = isValidPublicIp(suppliedIp) ? suppliedIp : getRequestIp(request);
   const updatedCase = await captureDeviceIntelligence(kycCase.id, {
     browserFingerprint: String(body.browserFingerprint ?? ""),
     ipAddress,
@@ -61,3 +62,4 @@ export async function POST(request: NextRequest, context: LocalRouteContext) {
     deviceIntelligence: updatedCase?.deviceIntelligence,
   });
 }
+

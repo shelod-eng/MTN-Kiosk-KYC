@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { resolveWhat3Words } from "@/lib/provider-adapters";
-import { captureLocation, getCaseBySessionToken } from "@/lib/whatsapp-store";
+import { captureLocation, getCase, getCaseBySessionToken } from "@/lib/whatsapp-store";
 
 type LocalRouteContext = {
   params: Promise<{ token: string }>;
@@ -8,12 +8,12 @@ type LocalRouteContext = {
 
 export async function POST(request: NextRequest, context: LocalRouteContext) {
   const { token } = await context.params;
-  const kycCase = await getCaseBySessionToken(token);
+  const body = (await request.json()) as { latitude?: number; longitude?: number; accuracy?: number; towerId?: string; caseId?: string };
+  const fallbackCaseId = typeof body.caseId === "string" ? body.caseId : "";
+  const kycCase = (await getCaseBySessionToken(token)) ?? (fallbackCaseId ? await getCase(fallbackCaseId) : null);
   if (!kycCase) {
     return NextResponse.json({ error: "Session not found or expired." }, { status: 404 });
   }
-
-  const body = (await request.json()) as { latitude?: number; longitude?: number; accuracy?: number; towerId?: string };
   if (body.latitude === undefined || body.longitude === undefined) {
     return NextResponse.json({ error: "Missing coordinates." }, { status: 400 });
   }
@@ -47,3 +47,4 @@ function inferNearestTower(provider: string, latitude: number, longitude: number
   const lon = Math.abs(Math.round(longitude * 1000));
   return `${providerCode}_TWR_${String((lat + lon) % 997).padStart(3, "0")}`;
 }
+

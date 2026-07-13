@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { captureIdDocument, getCaseBySessionToken } from "@/lib/whatsapp-store";
+import { captureIdDocument, getCase, getCaseBySessionToken, saveCaseSnapshot } from "@/lib/whatsapp-store";
+import { validateSecureSessionToken } from "@/lib/whatsapp-kyc";
+import type { WhatsAppKycCase } from "@/lib/whatsapp-kyc";
 
 type LocalRouteContext = {
   params: Promise<{ token: string }>;
@@ -13,10 +15,22 @@ export async function POST(request: NextRequest, context: LocalRouteContext) {
     documentType?: string;
     fileName?: string;
     extractedIdNumber?: string;
+    caseSnapshot?: WhatsAppKycCase;
   };
 
-  const kycCase = await getCaseBySessionToken(token);
-  const caseId = kycCase?.id ?? body.caseId;
+  const fallbackCaseId = typeof body.caseId === "string" ? body.caseId : "";
+  const tokenPayload = validateSecureSessionToken(token);
+  let kycCase =
+    (await getCaseBySessionToken(token)) ??
+    (tokenPayload?.caseId ? await getCase(tokenPayload.caseId) : null) ??
+    (fallbackCaseId ? await getCase(fallbackCaseId) : null);
+
+  const snapshotCaseId = tokenPayload?.caseId ?? fallbackCaseId;
+  if (!kycCase && snapshotCaseId && body.caseSnapshot?.id === snapshotCaseId) {
+    kycCase = await saveCaseSnapshot(body.caseSnapshot);
+  }
+
+  const caseId = kycCase?.id;
   if (!caseId) {
     return NextResponse.json({ error: "Session not found or expired. Please restart the WhatsApp KYC case." }, { status: 404 });
   }

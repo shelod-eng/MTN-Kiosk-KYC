@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createCase, createCaseSession, getCase } from "@/lib/whatsapp-store";
+import { enqueueOtpDispatch } from "@/lib/kyc-queue";
 import { requirePermission } from "@/lib/staff-auth";
 
 export async function POST(request: NextRequest) {
@@ -28,6 +29,14 @@ export async function POST(request: NextRequest) {
     deliveryMethod: body.deliveryMethod,
     notes: body.notes,
   });
+  if (body.deliveryMethod === "whatsapp") {
+    await enqueueOtpDispatch({
+      caseId: kycCase.id,
+      msisdn: body.customerPhoneNumber,
+      provider: body.tenant,
+      source: "single",
+    });
+  }
   const session = await createCaseSession(kycCase.id);
   const sessionReadyCase = (await getCase(kycCase.id)) ?? kycCase;
 

@@ -1,6 +1,12 @@
+import { createHash, randomInt, timingSafeEqual } from "node:crypto";
+import { getCase } from "@/lib/whatsapp-store";
+import { sendWhatsAppMessage } from "@/lib/twilio-whatsapp";
+
 type OtpSendInput = {
   caseId: string;
   phoneNumber: string;
+  code: string;
+  reference?: string;
 };
 
 type OtpVerifyInput = {
@@ -21,13 +27,32 @@ type BiometricInput = {
 
 export async function sendOtpWithProvider(input: OtpSendInput) {
   const provider = process.env.OTP_PROVIDER ?? "mock";
+  const message = `Your KYC-Now one-time PIN is ${input.code}. It expires in 5 minutes. Ref: ${input.reference ?? input.caseId}`;
 
-  if (provider === "twilio-verify") {
+  if (provider === "mock") {
+    console.log(`[otp-mock] ${input.phoneNumber}: ${message}`);
+    return {
+      provider: "mock",
+      reference: `mock-${input.caseId}`,
+      status: "mock-sent",
+      message: `Mock OTP generated for ${input.phoneNumber}.`,
+    };
+  }
+
+  const delivery = await sendWhatsAppMessage(input.phoneNumber, message, {
+    caseId: input.caseId,
+    caseReference: input.reference,
+    purpose: "otp_send",
+  });
+
+  if (provider === "twilio-verify" || provider === "twilio-sandbox") {
     return {
       provider,
-      reference: `twilio-${input.caseId}`,
-      status: "sent",
+      reference: delivery.sid || `twilio-${input.caseId}`,
+      status: delivery.status,
       message: `OTP dispatched to ${input.phoneNumber}.`,
+      transportSender: delivery.transportSender,
+      logicalSender: delivery.logicalSender,
     };
   }
 
@@ -43,20 +68,38 @@ export async function sendOtpWithProvider(input: OtpSendInput) {
   return {
     provider: "mock",
     reference: `mock-${input.caseId}`,
-    status: "sent",
-    message: `Mock OTP sent to ${input.phoneNumber}. Use 123456 to verify.`,
+    status: "mock-sent",
+    message: `Mock OTP sent to ${input.phoneNumber}.`,
   };
 }
 
 export async function verifyOtpWithProvider(input: OtpVerifyInput) {
   const provider = process.env.OTP_PROVIDER ?? "mock";
-  const approved = input.code === "123456";
+  const kycCase = await getCase(input.caseId);
+  const otp = kycCase?.verification.otp;
+  const isExpired = otp?.expiresAt ? new Date(otp.expiresAt).getTime() < Date.now() : true;
+  const approved = Boolean(otp?.codeHash && !isExpired && safeHashCompare(hashOtpCode(input.caseId, input.code), otp.codeHash));
 
   return {
     provider,
     approved,
     reference: `${provider}-${input.caseId}-verify`,
   };
+}
+
+export function generateOtpCode() {
+  return String(randomInt(0, 1_000_000)).padStart(6, "0");
+}
+
+export function hashOtpCode(caseId: string, code: string) {
+  const pepper = process.env.OTP_HASH_PEPPER ?? process.env.WHATSAPP_SESSION_SECRET ?? "dev-otp-pepper";
+  return createHash("sha256").update(`${pepper}:${caseId}:${code}`).digest("hex");
+}
+
+function safeHashCompare(left: string, right: string) {
+  const leftBuffer = Buffer.from(left, "hex");
+  const rightBuffer = Buffer.from(right, "hex");
+  return leftBuffer.length === rightBuffer.length && timingSafeEqual(leftBuffer, rightBuffer);
 }
 
 export async function resolveWhat3Words(input: LocationInput) {
@@ -95,3 +138,6 @@ export async function runBiometricProvider(input: BiometricInput) {
     providerReference: `mock-${input.caseId}`,
   };
 }
+
+
+

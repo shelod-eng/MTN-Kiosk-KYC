@@ -1,5 +1,6 @@
 import { createCase, createCaseSession, getCase, persistBulkBatch } from "@/lib/whatsapp-store";
 import { normalizePhoneNumber, type StaffInitiationPayload, type WhatsAppKycCase } from "@/lib/whatsapp-kyc";
+import { enqueueOtpDispatch } from "@/lib/kyc-queue";
 
 export type NetworkProvider = "MTN" | "Vodacom" | "Cell C";
 
@@ -89,6 +90,13 @@ export async function ingestBulkCampaign(input: BulkCampaignInput): Promise<Bulk
         towerId: row.towerId,
         locationEvidence: row.locationEvidence,
       },
+    });
+    await enqueueOtpDispatch({
+      caseId: kycCase.id,
+      msisdn: row.phoneNumber,
+      provider: input.provider,
+      source: "bulk",
+      batchReference,
     });
     await createCaseSession(kycCase.id);
     cases.push((await getCase(kycCase.id)) ?? kycCase);

@@ -144,6 +144,8 @@ export function SecureSessionClient({ kycCase, token }: SecureSessionClientProps
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
+        caseId: sessionCase.id,
+        caseSnapshot: sessionCase,
         documentUrl,
         documentType,
         fileName: file.name,
@@ -305,7 +307,7 @@ export function SecureSessionClient({ kycCase, token }: SecureSessionClientProps
                 defaultValue="South African ID"
               >
                 <option>South African ID</option>
-                <option>Driver's license</option>
+                <option>Driver&apos;s license</option>
                 <option>Passport</option>
               </select>
               <input

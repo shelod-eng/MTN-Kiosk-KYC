@@ -144,7 +144,7 @@ export function WhatsAppKycChatDemo() {
       headers: staffHeaders,
       body: JSON.stringify({ caseId: nextCase.id, caseSnapshot: nextCase }),
     });
-    const otpPayload = (await otpResponse.json()) as { status?: string; error?: string };
+    const otpPayload = await readApiJson<{ status?: string; error?: string; devOtp?: string }>(otpResponse);
     if (!otpResponse.ok) {
       addMessage("platform", otpPayload.error ?? "Could not dispatch OTP for this queued MSISDN.");
       return;
@@ -152,7 +152,12 @@ export function WhatsAppKycChatDemo() {
     const otpCase = { ...nextCase, status: (otpPayload.status as WhatsAppKycCase["status"]) ?? "otp_pending" };
     applyCaseUpdate(otpCase);
     setStep("otp");
-    addMessage("platform", `Your ${nextCase.tenant} KYC-Now OTP is 123456. Enter it here to verify this WhatsApp number.`);
+    addMessage(
+      "platform",
+      otpPayload.devOtp
+        ? `Your ${nextCase.tenant} KYC-Now UAT OTP is ${otpPayload.devOtp}. Enter it here to verify this WhatsApp number.`
+        : `OTP sent to ${nextCase.applicant.phoneNumber ?? nextCase.staffInitiation.customerPhoneNumber}. Enter the WhatsApp OTP here to verify this number.`
+    );
   }
 
   async function seedMsisdnAndSendOtp() {
@@ -168,8 +173,8 @@ export function WhatsAppKycChatDemo() {
           notes: "Single MSISDN intake for WhatsApp KYC renewal flow",
         }),
       });
-      const initiatePayload = (await initiateResponse.json()) as { case?: WhatsAppKycCase; error?: string };
-      if (!initiatePayload.case) {
+      const initiatePayload = await readApiJson<{ case?: WhatsAppKycCase; error?: string }>(initiateResponse);
+      if (!initiateResponse.ok || !initiatePayload.case) {
         addMessage("platform", initiatePayload.error ?? "Could not create the WhatsApp KYC case.");
         return;
       }
@@ -190,7 +195,7 @@ export function WhatsAppKycChatDemo() {
           sourceFileName: bulkFileName,
         }),
       });
-      const payload = (await response.json()) as { batch?: BulkCampaignBatch; error?: string };
+      const payload = await readApiJson<{ batch?: BulkCampaignBatch; error?: string }>(response);
       if (!response.ok || !payload.batch) {
         setQueueMessage(payload.error ?? "Bulk campaign ingestion failed.");
         addMessage("platform", payload.error ?? "Bulk campaign ingestion failed.");
@@ -266,9 +271,9 @@ export function WhatsAppKycChatDemo() {
         headers: staffHeaders,
         body: JSON.stringify({ caseId: caseItem.id, code }),
       });
-      const payload = (await response.json()) as { case?: WhatsAppKycCase; error?: string };
+      const payload = await readApiJson<{ case?: WhatsAppKycCase; error?: string }>(response);
       if (!response.ok || !payload.case) {
-        addMessage("platform", payload.error ?? "OTP verification failed. Try 123456 for the demo.");
+        addMessage("platform", payload.error ?? "OTP verification failed. Check the latest OTP shown in this demo and try again.");
         return;
       }
       applyCaseUpdate(payload.case);
@@ -384,7 +389,7 @@ export function WhatsAppKycChatDemo() {
       });
       const devicePayload = (await deviceResponse.json().catch(() => null)) as { case?: WhatsAppKycCase } | null;
       if (devicePayload?.case) applyCaseUpdate(devicePayload.case);
-      const locationResult = await captureBrowserLocation(token);
+      const locationResult = await captureBrowserLocation(token, caseItem.id);
       if (locationResult.case) applyCaseUpdate(locationResult.case);
       const biometricResponse = await fetch("/api/whatsapp/biometrics/analyze", {
         method: "POST",
@@ -836,7 +841,7 @@ function Metric({ label, value }: { label: string; value: string }) {
 }
 
 function placeholderFor(step: ChatStep) {
-  if (step === "otp") return "Enter OTP 123456";
+  if (step === "otp") return "Enter the OTP shown above";
   if (step === "fullName") return "Enter full name";
   if (step === "idNumber") return "Enter SA ID number";
   if (step === "address") return "Type affidavit text or attach proof";
@@ -869,6 +874,16 @@ async function readApiError(response: Response) {
   return `Request failed with status ${response.status}. Please retry or restart the KYC case.`;
 }
 
+async function readApiJson<T extends { error?: string }>(response: Response): Promise<T> {
+  const contentType = response.headers.get("content-type") ?? "";
+  if (contentType.includes("application/json")) {
+    const payload = (await response.json().catch(() => null)) as T | null;
+    if (payload) return payload;
+  }
+
+  return { error: await readApiError(response) } as T;
+}
+
 function buildDeviceFingerprint() {
   return {
     browserFingerprint: `${navigator.userAgent}:${screen.width}x${screen.height}:${Intl.DateTimeFormat().resolvedOptions().timeZone}`,
@@ -883,7 +898,7 @@ function buildDeviceFingerprint() {
   };
 }
 
-async function captureBrowserLocation(token: string) {
+async function captureBrowserLocation(token: string, caseId?: string) {
   const fallback = { latitude: -26.2041, longitude: 28.0473, accuracy: 25 };
   const coords = await new Promise<{ latitude: number; longitude: number; accuracy?: number }>((resolve) => {
     if (!navigator.geolocation) {
@@ -906,7 +921,7 @@ async function captureBrowserLocation(token: string) {
   const response = await fetch(`/api/whatsapp/session/${encodeURIComponent(token)}/location`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(coords),
+    body: JSON.stringify({ ...coords, caseId }),
   });
   const payload = response.ok
     ? ((await response.json()) as {
@@ -966,3 +981,5 @@ function makeMessage(sender: Message["sender"], text: string): Message {
     timestamp: new Date().toLocaleTimeString("en-ZA", { hour: "2-digit", minute: "2-digit" }),
   };
 }
+
+

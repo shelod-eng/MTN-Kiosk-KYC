@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { describeWhatsAppSenderMapping } from "@/lib/twilio-whatsapp";
 import { getPersistenceMode } from "@/lib/whatsapp-store";
 
 export async function GET() {
@@ -9,6 +10,7 @@ export async function GET() {
       biometrics: process.env.BIOMETRIC_PROVIDER ?? "mock",
       what3words: process.env.WHAT3WORDS_API_KEY ? "configured" : "mock",
     },
+    whatsapp: describeWhatsAppSenderMapping(),
     supabaseConfigured: Boolean(process.env.SUPABASE_URL && process.env.SUPABASE_ANON_KEY),
   });
 }

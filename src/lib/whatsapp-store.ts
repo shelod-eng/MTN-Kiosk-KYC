@@ -6,6 +6,7 @@ import {
   createSecureSession,
   createWhatsAppCase,
   exportAuditTrail,
+  normalizePhoneNumber,
   type AffidavitCapture,
   type DeviceIntelligence,
   type GeoCapture,
@@ -23,9 +24,42 @@ type StoreShape = {
   cases: Map<string, WhatsAppKycCase>;
   sessions: Map<string, { caseId: string; expiresAt: string }>;
   bulkBatches: Map<string, BulkCampaignResult>;
+  inboundEvents: InboundWebhookEvent[];
+  messageTraces: WhatsAppMessageTrace[];
 };
 
 const globalStore = globalThis as typeof globalThis & { __whatsappKycStore?: StoreShape };
+
+export type WhatsAppMessageTrace = {
+  id: string;
+  direction: "inbound" | "outbound";
+  channel: "whatsapp";
+  provider: string;
+  messageSid: string;
+  caseId?: string;
+  caseReference?: string;
+  from: string;
+  to: string;
+  transportSender?: string;
+  logicalSender?: string;
+  bodyPreview: string;
+  status: string;
+  reason?: string;
+  occurredAt: string;
+};
+
+export type InboundWebhookEvent = {
+  id: string;
+  receivedAt: string;
+  messageSid: string;
+  from: string;
+  transportTo: string;
+  logicalTo: string;
+  bodyPreview: string;
+  mediaCount: number;
+  status: "received" | "routed" | "ignored" | "error";
+  reason?: string;
+};
 
 function getMemoryStore() {
   if (!globalStore.__whatsappKycStore) {
@@ -33,10 +67,111 @@ function getMemoryStore() {
       cases: new Map<string, WhatsAppKycCase>(),
       sessions: new Map<string, { caseId: string; expiresAt: string }>(),
       bulkBatches: new Map<string, BulkCampaignResult>(),
+      inboundEvents: [],
+      messageTraces: [],
     };
   }
 
   return globalStore.__whatsappKycStore;
+}
+
+export async function recordInboundWebhookEvent(event: Omit<InboundWebhookEvent, "id" | "receivedAt"> & { id?: string; receivedAt?: string; caseId?: string; caseReference?: string }) {
+  const store = getMemoryStore();
+  const nextEvent: InboundWebhookEvent = {
+    id: event.id ?? `inbound_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    receivedAt: event.receivedAt ?? new Date().toISOString(),
+    ...event,
+  };
+  store.inboundEvents = [nextEvent, ...store.inboundEvents].slice(0, 50);
+  await recordWhatsAppMessageTrace({
+    id: nextEvent.id,
+    direction: "inbound",
+    provider: "twilio-inbound",
+    messageSid: nextEvent.messageSid,
+    caseId: event.caseId,
+    caseReference: event.caseReference,
+    from: nextEvent.from,
+    to: nextEvent.logicalTo || nextEvent.transportTo,
+    transportSender: nextEvent.transportTo,
+    logicalSender: nextEvent.logicalTo,
+    bodyPreview: nextEvent.bodyPreview,
+    status: nextEvent.status,
+    reason: nextEvent.reason,
+    occurredAt: nextEvent.receivedAt,
+  });
+  return nextEvent;
+}
+
+export function listInboundWebhookEvents() {
+  return getMemoryStore().inboundEvents;
+}
+
+export async function recordWhatsAppMessageTrace(trace: Omit<WhatsAppMessageTrace, "id" | "occurredAt" | "channel"> & { id?: string; occurredAt?: string; channel?: "whatsapp" }) {
+  const nextTrace: WhatsAppMessageTrace = {
+    id: trace.id ?? `wa_trace_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    occurredAt: trace.occurredAt ?? new Date().toISOString(),
+    channel: trace.channel ?? "whatsapp",
+    ...trace,
+  };
+  const store = getMemoryStore();
+  store.messageTraces = [nextTrace, ...store.messageTraces.filter((item) => item.id !== nextTrace.id)].slice(0, 100);
+
+  if (hasSupabaseConfig()) {
+    try {
+      await supabaseRequest("kyc_whatsapp_message_traces?on_conflict=id", {
+        method: "POST",
+        body: JSON.stringify([{
+          id: nextTrace.id,
+          direction: nextTrace.direction,
+          channel: nextTrace.channel,
+          provider: nextTrace.provider,
+          message_sid: nextTrace.messageSid,
+          case_id: nextTrace.caseId ?? null,
+          case_reference: nextTrace.caseReference ?? null,
+          from_number: nextTrace.from,
+          to_number: nextTrace.to,
+          transport_sender: nextTrace.transportSender ?? null,
+          logical_sender: nextTrace.logicalSender ?? null,
+          body_preview: nextTrace.bodyPreview,
+          status: nextTrace.status,
+          reason: nextTrace.reason ?? null,
+          occurred_at: nextTrace.occurredAt,
+        }]),
+      });
+    } catch (error) {
+      console.warn("[whatsapp-trace] Supabase persistence unavailable", error);
+    }
+  }
+
+  return nextTrace;
+}
+
+export async function listWhatsAppMessageTraces() {
+  if (!hasSupabaseConfig()) return getMemoryStore().messageTraces;
+
+  try {
+    const rows = (await supabaseRequest("kyc_whatsapp_message_traces?select=*&order=occurred_at.desc&limit=100")) as Array<Record<string, unknown>>;
+    return rows.map((row) => ({
+      id: String(row.id ?? ""),
+      direction: String(row.direction ?? "inbound") === "outbound" ? "outbound" : "inbound",
+      channel: "whatsapp" as const,
+      provider: String(row.provider ?? ""),
+      messageSid: String(row.message_sid ?? ""),
+      caseId: row.case_id ? String(row.case_id) : undefined,
+      caseReference: row.case_reference ? String(row.case_reference) : undefined,
+      from: String(row.from_number ?? ""),
+      to: String(row.to_number ?? ""),
+      transportSender: row.transport_sender ? String(row.transport_sender) : undefined,
+      logicalSender: row.logical_sender ? String(row.logical_sender) : undefined,
+      bodyPreview: String(row.body_preview ?? ""),
+      status: String(row.status ?? ""),
+      reason: row.reason ? String(row.reason) : undefined,
+      occurredAt: String(row.occurred_at ?? ""),
+    })) as WhatsAppMessageTrace[];
+  } catch (error) {
+    console.warn("[whatsapp-trace] Falling back to memory traces", error);
+    return getMemoryStore().messageTraces;
+  }
 }
 
 function mapCaseRow(row: Record<string, unknown>) {
@@ -65,7 +200,7 @@ async function persistCase(kycCase: WhatsAppKycCase) {
         tenant: kycCase.tenant,
         channel: kycCase.channel,
         status: kycCase.status,
-        customer_phone_number: kycCase.applicant.phoneNumber ?? kycCase.staffInitiation.customerPhoneNumber,
+        customer_phone_number: normalizePhoneNumber(kycCase.applicant.phoneNumber ?? kycCase.staffInitiation.customerPhoneNumber),
         staff_id: kycCase.staffInitiation.staffId,
         staff_name: kycCase.staffInitiation.staffName,
         staff_role: kycCase.staffInitiation.staffRole,
@@ -289,6 +424,28 @@ export async function updateFromWebhook(payload: WhatsAppWebhookPayload) {
   return persistCase(nextCase);
 }
 
+export async function findCaseByPhoneNumber(phoneNumber: string) {
+  const normalizedPhone = normalizePhoneNumber(phoneNumber);
+  if (!normalizedPhone) return null;
+
+  if (!hasSupabaseConfig()) {
+    for (const candidate of getMemoryStore().cases.values()) {
+      if (
+        normalizePhoneNumber(candidate.staffInitiation.customerPhoneNumber) === normalizedPhone ||
+        normalizePhoneNumber(candidate.applicant.phoneNumber ?? "") === normalizedPhone
+      ) {
+        return candidate;
+      }
+    }
+    return null;
+  }
+
+  const rows = (await supabaseRequest(
+    `kyc_cases?select=case_payload&customer_phone_number=eq.${encodeURIComponent(normalizedPhone)}`
+  )) as Array<Record<string, unknown>>;
+  return rows[0] ? mapCaseRow(rows[0]) : null;
+}
+
 export async function createCaseSession(caseId: string) {
   const current = await loadCase(caseId);
   if (!current) return null;
@@ -460,6 +617,7 @@ export async function captureIdDocument(caseId: string, payload: { documentUrl: 
   const matchedEnteredId = extractedIdNumber ? String(extractedIdNumber) === String(current.applicant.idNumber ?? "") : undefined;
   const nextCase = {
     ...current,
+    status: current.status === "selfie_pending" ? "address_pending" : current.status,
     verification: {
       ...current.verification,
       identityDocument: {
@@ -697,7 +855,12 @@ function simulateAddressOcrScore(documentType: string, fileName?: string): numbe
   return baseScore;
 }
 
-export async function upsertOtp(caseId: string, mode: "send" | "verify", attempts = 1) {
+export async function upsertOtp(
+  caseId: string,
+  mode: "send" | "verify",
+  attempts = 1,
+  options: { codeHash?: string; provider?: string; providerReference?: string; transportSender?: string; logicalSender?: string } = {}
+) {
   const current = await loadCase(caseId);
   if (!current) return null;
   const now = new Date();
@@ -726,12 +889,20 @@ export async function upsertOtp(caseId: string, mode: "send" | "verify", attempt
               expiresAt: current.verification.otp?.expiresAt ?? new Date(now.getTime() + 5 * 60 * 1000).toISOString(),
               lastSentAt: current.verification.otp?.lastSentAt ?? now.toISOString(),
               verifiedAt: now.toISOString(),
+              codeHash: current.verification.otp?.codeHash,
+              provider: current.verification.otp?.provider,
+              providerReference: current.verification.otp?.providerReference,
+              channel: current.verification.otp?.channel ?? "whatsapp",
             }
           : {
               status: "pending" as const,
               attempts,
               expiresAt: new Date(now.getTime() + 5 * 60 * 1000).toISOString(),
               lastSentAt: now.toISOString(),
+              codeHash: options.codeHash,
+              provider: options.provider,
+              providerReference: options.providerReference,
+              channel: "whatsapp" as const,
             },
     },
     updatedAt: now.toISOString(),
@@ -745,6 +916,11 @@ export async function upsertOtp(caseId: string, mode: "send" | "verify", attempt
         attempts,
         msisdnVerified: mode === "verify",
         phoneNumber: nextCase.applicant.phoneNumber ?? nextCase.staffInitiation.customerPhoneNumber,
+        provider: nextCase.verification.otp?.provider ?? options.provider ?? null,
+        providerReference: nextCase.verification.otp?.providerReference ?? options.providerReference ?? null,
+        transportSender: options.transportSender ?? null,
+        logicalSender: options.logicalSender ?? null,
+        channel: "whatsapp",
       },
     })
   );
@@ -778,3 +954,6 @@ export async function runRiskAssessment(caseId: string) {
 export function getPersistenceMode() {
   return hasSupabaseConfig() ? "supabase" : "memory";
 }
+
+
+

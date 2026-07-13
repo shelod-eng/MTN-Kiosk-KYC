@@ -13,6 +13,8 @@ const staffHeaders = {
 type RoleView = "Sponsor" | "MNO" | "Admin";
 type WorkView = "cases" | "batches";
 type FilterView = "all" | "pending" | "approved" | "highRisk";
+type SponsorTab = "business" | "technical";
+type ReportMode = "single" | "bulk";
 
 type QueueSnapshot = {
   configured: boolean;
@@ -41,12 +43,53 @@ type BulkBatch = {
   }>;
 };
 
+type WhatsAppTrace = {
+  id: string;
+  direction: "inbound" | "outbound";
+  channel: "whatsapp";
+  provider: string;
+  messageSid: string;
+  caseId?: string;
+  caseReference?: string;
+  from: string;
+  to: string;
+  transportSender?: string;
+  logicalSender?: string;
+  bodyPreview: string;
+  status: string;
+  reason?: string;
+  occurredAt: string;
+};
+
+type ConnectivitySnapshot = {
+  waba: {
+    displayNumber: string;
+    e164: string;
+    configuredNumber: string;
+    configured: boolean;
+    connected: boolean;
+    lastInboundAt: string | null;
+  };
+  twilio: {
+    accountSid: string;
+    webhookEndpoint: string;
+    testEndpoint: string;
+    transportSender: string;
+    logicalSender: string;
+    mode: string;
+    lastOutboundAt: string | null;
+  };
+  inboundTraffic: WhatsAppTrace[];
+  messageTraces: WhatsAppTrace[];
+};
+
 type DashboardPayload = {
   generatedAt: string;
   persistenceMode?: "supabase" | "memory";
   cases: WhatsAppKycCase[];
   bulkBatches: BulkBatch[];
   queue: QueueSnapshot;
+  connectivity?: ConnectivitySnapshot;
   requestedBy?: {
     staffName?: string;
     staffRole?: string;
@@ -66,9 +109,15 @@ export function KycDashboard() {
   const [roleView, setRoleView] = useState<RoleView>("Sponsor");
   const [workView, setWorkView] = useState<WorkView>("cases");
   const [filterView, setFilterView] = useState<FilterView>("all");
+  const [selectedMetric, setSelectedMetric] = useState<FilterView>("all");
+  const [sponsorTab, setSponsorTab] = useState<SponsorTab>("business");
+  const [reportMode, setReportMode] = useState<ReportMode>("single");
   const [selectedCaseId, setSelectedCaseId] = useState<string>("");
   const [selectedBatchId, setSelectedBatchId] = useState<string>("");
   const [lastRefreshError, setLastRefreshError] = useState("");
+  const [refreshing, setRefreshing] = useState(false);
+  const [connectivityTest, setConnectivityTest] = useState<{ status: string; checkedAt: string } | null>(null);
+  const [testingConnectivity, setTestingConnectivity] = useState(false);
 
   useEffect(() => {
     void loadDashboard(true);
@@ -78,6 +127,7 @@ export function KycDashboard() {
 
   async function loadDashboard(showLoading: boolean) {
     if (showLoading) setLoading(true);
+    setRefreshing(true);
     try {
       const response = await fetch(`/api/dashboard?ts=${Date.now()}`, {
         headers: staffHeaders,
@@ -94,6 +144,24 @@ export function KycDashboard() {
       setSelectedBatchId((current) => current || nextPayload.bulkBatches[0]?.id || "");
     } finally {
       if (showLoading) setLoading(false);
+      setRefreshing(false);
+    }
+  }
+
+  async function runConnectivityTest() {
+    setTestingConnectivity(true);
+    try {
+      const response = await fetch(payload.connectivity?.twilio.testEndpoint ?? "/api/whatsapp/connectivity-test", {
+        method: "POST",
+        headers: staffHeaders,
+      });
+      const result = (await response.json().catch(() => null)) as { status?: string; checkedAt?: string } | null;
+      setConnectivityTest({
+        status: response.ok ? result?.status ?? "200 OK" : `${response.status} ${response.statusText}`,
+        checkedAt: result?.checkedAt ?? new Date().toISOString(),
+      });
+    } finally {
+      setTestingConnectivity(false);
     }
   }
 
@@ -110,14 +178,14 @@ export function KycDashboard() {
   const decisionDistribution = useMemo(() => buildDecisionDistribution(sortedCases), [sortedCases]);
 
   return (
-    <main className="min-h-screen bg-[#080d14] text-[#eef4f8]">
+    <main className="min-h-screen bg-[#dfe7e5] text-[#102033]" style={{ fontFamily: "Inter, Roboto, Open Sans, Arial, sans-serif" }}>
       <section className="mx-auto flex w-full max-w-[1600px] flex-col gap-5 px-4 py-5">
-        <header className="flex flex-wrap items-center justify-between gap-4 border-b border-[#263240] pb-5">
+        <header className="flex flex-wrap items-center justify-between gap-4 border-b border-[#b6c3c7] pb-5">
           <div className="flex min-w-0 items-center gap-3">
             <div className="grid size-12 place-items-center rounded-md bg-[#1fb393] text-xl font-black text-[#06131a]">K</div>
             <div>
-              <h1 className="text-2xl font-semibold tracking-normal text-white sm:text-3xl">KYC-Now Processing Dashboard</h1>
-              <p className="mt-1 text-sm text-[#8ea4b5]">Unified case, batch, evidence, and audit analytics</p>
+              <h1 className="text-2xl font-semibold tracking-normal text-[#102033] sm:text-3xl">KYC-Now Processing Dashboard</h1>
+              <p className="mt-1 text-sm text-[#365468]">Unified case, batch, evidence, and audit analytics</p>
             </div>
           </div>
           <div className="flex flex-wrap items-center justify-end gap-2">
@@ -125,9 +193,13 @@ export function KycDashboard() {
               <button
                 key={view}
                 type="button"
-                onClick={() => setRoleView(view)}
+                onClick={() => {
+                  setRoleView(view);
+                  if (view === "MNO") setWorkView("batches");
+                  if (view === "Sponsor") setSponsorTab("business");
+                }}
                 className={`rounded-md border px-3 py-2 text-sm font-semibold ${
-                  roleView === view ? "border-[#56d39f] bg-[#123528] text-[#80f0b2]" : "border-[#2a3645] bg-[#111923] text-[#b7c6d1]"
+                  roleView === view ? "border-[#56d39f] bg-[#123528] text-[#80f0b2] shadow-[0_0_0_3px_rgba(86,211,159,0.15)]" : "border-[#2a3645] bg-[#111923] text-[#b7c6d1]"
                 }`}
               >
                 {view}
@@ -136,9 +208,10 @@ export function KycDashboard() {
             <button
               type="button"
               onClick={() => void loadDashboard(true)}
-              className="rounded-md border border-[#2a3645] bg-[#111923] px-3 py-2 text-sm font-semibold text-[#b7c6d1]"
+              disabled={refreshing}
+              className="rounded-md border border-[#2a3645] bg-[#111923] px-3 py-2 text-sm font-semibold text-[#b7c6d1] disabled:cursor-wait disabled:opacity-60"
             >
-              Refresh
+              {refreshing ? "Refreshing..." : "Refresh"}
             </button>
           </div>
         </header>
@@ -146,11 +219,53 @@ export function KycDashboard() {
         {lastRefreshError && <p className="rounded-md border border-[#7f2d2d] bg-[#321316] px-4 py-3 text-sm text-[#ffb4a8]">{lastRefreshError}</p>}
 
         <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-          <MetricCard label="Total Cases" value={String(metrics.total)} tone="blue" />
-          <MetricCard label="Pending Verifications" value={String(metrics.pending)} tone="green" />
-          <MetricCard label="Approved Cases" value={String(metrics.approved)} tone="amber" />
-          <MetricCard label="High Risk Alerts" value={String(metrics.highRisk)} tone="red" />
+          <MetricCard icon="BI" label="Total Cases" value={String(metrics.total)} tone="blue" active={selectedMetric === "all"} onClick={() => { setSelectedMetric("all"); setFilterView("all"); }} />
+          <MetricCard icon="!" label="Pending Verifications" value={String(metrics.pending)} tone="amber" active={selectedMetric === "pending"} onClick={() => { setSelectedMetric("pending"); setFilterView("pending"); }} />
+          <MetricCard icon="OK" label="Approved Cases" value={String(metrics.approved)} tone="green" active={selectedMetric === "approved"} onClick={() => { setSelectedMetric("approved"); setFilterView("approved"); }} />
+          <MetricCard icon="LOCK" label="High Risk Alerts" value={String(metrics.highRisk)} tone="red" active={selectedMetric === "highRisk"} onClick={() => { setSelectedMetric("highRisk"); setFilterView("highRisk"); }} />
         </section>
+
+        {roleView === "Sponsor" && (
+          <section id="sponsor-proof-tabs" className="space-y-3">
+            <div className="flex flex-wrap gap-2">
+              <button type="button" onClick={() => setSponsorTab("business")} className={`rounded-md px-4 py-2 text-sm font-black shadow-sm ${sponsorTab === "business" ? "bg-[#102033] text-white" : "bg-white text-[#102033] border border-[#c6d1d4]"}`}>Sponsor Cockpit</button>
+              <button type="button" onClick={() => setSponsorTab("technical")} className={`rounded-md px-4 py-2 text-sm font-black shadow-sm ${sponsorTab === "technical" ? "bg-[#102033] text-white" : "bg-white text-[#102033] border border-[#c6d1d4]"}`}>Technical Proof</button>
+            </div>
+            {sponsorTab === "business" ? (
+              <SponsorCockpitPanel cases={sortedCases} connectivity={payload.connectivity} onSelectCase={setSelectedCaseId} onExport={() => downloadSponsorCsv(visibleCases, payload.bulkBatches, reportMode, "kyc-now-sponsor-executive-export.csv")} />
+            ) : (
+              <Panel
+                title="Meta & Twilio Connectivity"
+                action={
+                  <div className="flex flex-wrap gap-2">
+                    <button type="button" onClick={() => void runConnectivityTest()} className="rounded-md bg-[#0f8f70] px-3 py-2 text-xs font-bold text-white shadow-sm">
+                      {testingConnectivity ? "Testing..." : "Test Twilio 200 OK"}
+                    </button>
+                    <button type="button" onClick={() => window.print()} className="rounded-md border border-[#6d7d86] bg-white px-3 py-2 text-xs font-bold text-[#102033] shadow-sm">
+                      Export Proof PDF
+                    </button>
+                  </div>
+                }
+              >
+                <MetaTwilioConnectivityPanel payload={payload} connectivityTest={connectivityTest} />
+              </Panel>
+            )}
+          </section>
+        )}
+
+        {roleView === "Sponsor" && (
+          <section className="grid min-w-0 gap-5 xl:grid-cols-[1.1fr_1fr_1fr]">
+            <Panel title="Sponsor View" action={<button type="button" onClick={() => downloadSponsorCsv(visibleCases, payload.bulkBatches, reportMode, "kyc-now-sponsor-excel-export.csv")} className="rounded-md bg-[#0f8f70] px-3 py-2 text-xs font-bold text-white">Export Excel CSV</button>}>
+              <SponsorOverviewPanel cases={sortedCases} connectivity={payload.connectivity} />
+            </Panel>
+            <Panel title="Risk Heatmap">
+              <RiskHeatmap cases={sortedCases} onSelect={setSelectedCaseId} />
+            </Panel>
+            <Panel title="Verification Trends">
+              <TrendPanel cases={sortedCases} />
+            </Panel>
+          </section>
+        )}
 
         {roleView === "Sponsor" && (
           <>
@@ -178,7 +293,7 @@ export function KycDashboard() {
                 <SponsorCaseSnapshot caseItem={selectedCase} />
               </Panel>
               <Panel title="Sponsor Export">
-                <SponsorExportPanel cases={visibleCases} generatedAt={payload.generatedAt} />
+                <SponsorExportPanel cases={visibleCases} batches={payload.bulkBatches} generatedAt={payload.generatedAt} reportMode={reportMode} onModeChange={setReportMode} />
               </Panel>
             </section>
           </>
@@ -290,8 +405,8 @@ export function KycDashboard() {
 
 function Panel({ title, action, children }: { title: string; action?: ReactNode; children: ReactNode }) {
   return (
-    <section className="min-w-0 overflow-hidden rounded-md border border-[#222d3a] bg-[#111923] shadow-[0_20px_60px_rgba(0,0,0,0.28)]">
-      <div className="flex min-h-12 items-center justify-between gap-3 border-b border-[#2c3847] bg-[#202734] px-4">
+    <section className="min-w-0 overflow-hidden rounded-md border border-[#c6d1d4] bg-white shadow-[0_18px_45px_rgba(16,32,51,0.14)] transition duration-200">
+      <div className="flex min-h-12 items-center justify-between gap-3 border-b border-[#d4dde0] bg-gradient-to-r from-[#102033] to-[#0f6f63] px-4">
         <h2 className="text-lg font-semibold text-[#f4f7fa]">{title}</h2>
         {action}
       </div>
@@ -300,18 +415,25 @@ function Panel({ title, action, children }: { title: string; action?: ReactNode;
   );
 }
 
-function MetricCard({ label, value, tone }: { label: string; value: string; tone: "blue" | "green" | "amber" | "red" }) {
+function MetricCard({ icon, label, value, tone, active, onClick }: { icon: string; label: string; value: string; tone: "blue" | "green" | "amber" | "red"; active?: boolean; onClick?: () => void }) {
   const color = {
-    blue: "text-[#8dd6ff]",
-    green: "text-[#61dd71]",
-    amber: "text-[#ffac66]",
-    red: "text-[#ff745c]",
+    blue: "text-[#1d6ea3]",
+    green: "text-[#087f5b]",
+    amber: "text-[#b76b00]",
+    red: "text-[#c2382b]",
   }[tone];
   return (
-    <div className="flex min-h-20 items-center justify-between rounded-md border border-[#263240] bg-[#202734] px-4 shadow-[0_14px_40px_rgba(0,0,0,0.25)]">
-      <p className="text-base font-semibold text-white">{label}</p>
+    <button
+      type="button"
+      onClick={onClick}
+      className={`group flex min-h-24 items-center justify-between rounded-md border bg-white px-4 text-left shadow-[0_14px_34px_rgba(16,32,51,0.12)] transition duration-200 hover:-translate-y-0.5 hover:shadow-[0_18px_42px_rgba(16,32,51,0.18)] ${active ? "border-[#0f8f70] ring-2 ring-[#0f8f70]/20" : "border-[#c6d1d4]"}`}
+    >
+      <div className="flex min-w-0 items-center gap-3">
+        <span className="grid size-10 place-items-center rounded-md bg-[#e6f3ef] text-xl">{icon}</span>
+        <p className="text-base font-bold text-[#102033]">{label}</p>
+      </div>
       <p className={`text-3xl font-black ${color}`}>{value}</p>
-    </div>
+    </button>
   );
 }
 
@@ -378,9 +500,9 @@ function BatchTable({ batches, selectedBatchId, onSelect }: { batches: BulkBatch
   if (!batches.length) return <p className="py-8 text-center text-sm text-[#8ea4b5]">No bulk batches ingested yet.</p>;
   return (
     <div className="space-y-2">
-      {batches.slice(0, 6).map((batch) => (
+      {batches.slice(0, 6).map((batch, index) => (
         <button
-          key={batch.id}
+          key={batch.id || `${batch.batchReference}-${index}`}
           type="button"
           onClick={() => onSelect(batch.id)}
           className={`w-full rounded-md border px-3 py-3 text-left ${batch.id === selectedBatchId ? "border-[#28c989] bg-[#1b3b35]" : "border-[#2a3645] bg-[#111923]"}`}
@@ -418,7 +540,7 @@ function DecisionWorkflowPanel({ caseItem }: { caseItem: WhatsAppKycCase | null 
         </div>
       ))}
       <p className="text-xs leading-5 text-[#9eb0bd]">
-        Current path: <span className="font-semibold text-[#eef4f8]">{activePath === "valid" ? "valid proof accepted" : activePath === "expired" ? "expired proof requires affidavit fallback" : activePath === "affidavit" ? "affidavit fallback captured" : "proof missing, affidavit required"}</span>.
+        Current path: <span className="font-semibold text-white">{activePath === "valid" ? "valid proof accepted" : activePath === "expired" ? "expired proof requires affidavit fallback" : activePath === "affidavit" ? "affidavit fallback captured" : "proof missing, affidavit required"}</span>.
       </p>
     </div>
   );
@@ -432,13 +554,13 @@ function CaseRiskBreakdown({ caseItem }: { caseItem: WhatsAppKycCase | null }) {
       {factors.map((factor) => (
         <div key={factor.label}>
           <div className="mb-1 flex items-center justify-between gap-3 text-sm">
-            <span className="font-semibold text-[#dce6ee]">{factor.label}</span>
+            <span className="font-semibold text-[#102033]">{factor.label}</span>
             <span className={factor.score >= 80 ? "text-[#80f0b2]" : factor.score >= 60 ? "text-[#ffd76a]" : "text-[#ff8b75]"}>{factor.score}%</span>
           </div>
           <div className="h-3 overflow-hidden rounded-full bg-[#2a3442]">
             <div className="h-full rounded-full" style={{ width: `${Math.max(4, factor.score)}%`, background: factor.color }} />
           </div>
-          {factor.reason && <p className="mt-1 text-xs text-[#91a6b7]">{factor.reason}</p>}
+          {factor.reason && <p className="mt-1 text-xs text-[#607484]">{factor.reason}</p>}
         </div>
       ))}
     </div>
@@ -480,6 +602,253 @@ function EvidencePanel({ caseItem }: { caseItem: WhatsAppKycCase | null }) {
   );
 }
 
+function SponsorCockpitPanel({ cases, connectivity, onSelectCase, onExport }: { cases: WhatsAppKycCase[]; connectivity?: ConnectivitySnapshot; onSelectCase: (id: string) => void; onExport: () => void }) {
+  const approved = cases.filter(isApprovedCase).length;
+  const failed = cases.filter(isRejectedCase).length;
+  const review = cases.filter((caseItem) => caseItem.risk?.decision === "REVIEW" || caseItem.status === "manual_review").length;
+  const pending = Math.max(0, cases.length - approved - failed - review);
+  const approvalRate = cases.length ? Math.round((approved / cases.length) * 100) : 0;
+  const highRisk = cases.filter((caseItem) => riskLevel(caseItem) === "High").length;
+  const riskScore = cases.length ? Math.round((highRisk / cases.length) * 100) : 0;
+  const complianceReady = Boolean(connectivity?.waba.configured && connectivity?.twilio.logicalSender);
+  return (
+    <Panel
+      title="Sponsor Cockpit"
+      action={<button type="button" onClick={onExport} className="rounded-md bg-[#0f8f70] px-4 py-2 text-xs font-black text-white shadow-sm">Export Executive Pack</button>}
+    >
+      <div className="space-y-5">
+        <div className="grid gap-3 md:grid-cols-4">
+          <ExecutiveMetric label="Cases Processed" value={String(cases.length)} tone="blue" symbol="BI" />
+          <ExecutiveMetric label="Approval Rate" value={`${approvalRate}%`} tone="green" symbol="OK" />
+          <ExecutiveMetric label="Compliance Ready" value={complianceReady ? "Ready" : "Review"} tone={complianceReady ? "green" : "amber"} symbol={complianceReady ? "OK" : "!"} />
+          <ExecutiveMetric label="Risk Score" value={`${riskScore}/100`} tone={riskScore > 30 ? "red" : "amber"} symbol={riskScore > 30 ? "FAIL" : "WARN"} />
+        </div>
+        <div className="grid gap-4 xl:grid-cols-[1fr_1fr_1fr]">
+          <ConversionFunnel pending={pending} review={review} approved={approved} failed={failed} />
+          <TrendPanel cases={cases} />
+          <ProviderRiskHeatmap cases={cases} />
+        </div>
+        <RiskHeatmap cases={cases} onSelect={onSelectCase} />
+      </div>
+    </Panel>
+  );
+}
+
+function ExecutiveMetric({ label, value, tone, symbol }: { label: string; value: string; tone: "blue" | "green" | "amber" | "red"; symbol: string }) {
+  const palette = {
+    blue: "border-[#b7d8ea] bg-[#edf7fb] text-[#174d71]",
+    green: "border-[#9bd6b8] bg-[#e1f5ec] text-[#087f5b]",
+    amber: "border-[#e0be63] bg-[#fff4d8] text-[#9a6500]",
+    red: "border-[#e58c7f] bg-[#ffe1dc] text-[#b42318]",
+  }[tone];
+  return (
+    <div className={`min-h-32 rounded-md border p-4 shadow-sm ${palette}`}>
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-sm font-black uppercase tracking-[0.08em]">{label}</p>
+        <span className="rounded bg-white/80 px-2 py-1 text-xs font-black">{symbol}</span>
+      </div>
+      <p className="mt-4 text-4xl font-black leading-none">{value}</p>
+    </div>
+  );
+}
+
+function ConversionFunnel({ pending, review, approved, failed }: { pending: number; review: number; approved: number; failed: number }) {
+  const stages = [
+    { label: "Pending", value: pending, color: "#1d6ea3" },
+    { label: "Review", value: review, color: "#b76b00" },
+    { label: "Approved", value: approved, color: "#087f5b" },
+    { label: "Failed", value: failed, color: "#c2382b" },
+  ];
+  const max = Math.max(1, ...stages.map((stage) => stage.value));
+  return (
+    <div className="rounded-md border border-[#c6d1d4] bg-[#f8fbfb] p-4 shadow-sm">
+      <h3 className="text-lg font-black text-[#102033]">Conversion Funnel</h3>
+      <div className="mt-4 space-y-3">
+        {stages.map((stage, index) => (
+          <div key={stage.label}>
+            <div className="flex items-center justify-between text-sm font-bold text-[#365468]"><span>{stage.label}</span><span>{stage.value}</span></div>
+            <div className="mt-1 h-4 overflow-hidden rounded-full bg-[#dfe7e5]">
+              <div className="h-full rounded-full" style={{ width: `${Math.max(8, (stage.value / max) * (100 - index * 8))}%`, background: stage.color }} />
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ProviderRiskHeatmap({ cases }: { cases: WhatsAppKycCase[] }) {
+  const providers = ["MTN", "Vodacom", "Telkom", "Cell C"];
+  return (
+    <div className="rounded-md border border-[#c6d1d4] bg-[#f8fbfb] p-4 shadow-sm">
+      <h3 className="text-lg font-black text-[#102033]">Risk Heatmap</h3>
+      <div className="mt-4 grid grid-cols-2 gap-2">
+        {providers.map((provider) => {
+          const providerCases = cases.filter((caseItem) => caseItem.tenant === provider);
+          const high = providerCases.filter((caseItem) => riskLevel(caseItem) === "High").length;
+          const approved = providerCases.filter(isApprovedCase).length;
+          const readiness = providerCases.length ? Math.round((approved / providerCases.length) * 100) : 0;
+          const tone = high > 0 ? "border-[#e58c7f] bg-[#ffe1dc]" : providerCases.length ? "border-[#9bd6b8] bg-[#e1f5ec]" : "border-[#c6d1d4] bg-white";
+          return (
+            <div key={provider} className={`rounded-md border p-3 ${tone}`}>
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-sm font-black text-[#102033]">{provider}</p>
+                <p className="text-xs font-black text-[#102033]">{readiness}%</p>
+              </div>
+              <div className="mt-2 h-2 overflow-hidden rounded-full bg-white/80">
+                <div className="h-full rounded-full bg-[#087f5b]" style={{ width: `${Math.max(6, readiness)}%` }} />
+              </div>
+              <p className="mt-2 text-xs font-semibold text-[#365468]">{providerCases.length} cases / {high} high risk</p>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+function SponsorOverviewPanel({ cases, connectivity }: { cases: WhatsAppKycCase[]; connectivity?: ConnectivitySnapshot }) {
+  const approved = cases.filter(isApprovedCase).length;
+  const review = cases.filter((caseItem) => caseItem.risk?.decision === "REVIEW" || caseItem.status === "manual_review").length;
+  const complianceReady = Boolean(connectivity?.waba.configured && connectivity?.twilio.logicalSender);
+  return (
+    <div className="space-y-3 text-sm text-[#365468]">
+      <div className="grid grid-cols-2 gap-2">
+        <MiniStat label="Cases Processed" value={String(cases.length)} color="#1d6ea3" />
+        <MiniStat label="Approval Rate" value={`${cases.length ? Math.round((approved / cases.length) * 100) : 0}%`} color="#087f5b" />
+        <MiniStat label="Review Queue" value={String(review)} color="#b76b00" />
+        <MiniStat label="Compliance Ready" value={complianceReady ? "Ready" : "Check"} color={complianceReady ? "#087f5b" : "#c2382b"} />
+      </div>
+      <p className="rounded-md border border-[#d4dde0] bg-[#f3f7f6] p-3 leading-6">
+        Sponsor cockpit summarises WhatsApp KYC throughput, risk exceptions, and Meta/Twilio evidence for MTN, Vodacom, Telkom, and Cell C UAT reviews.
+      </p>
+    </div>
+  );
+}
+
+function RiskHeatmap({ cases, onSelect }: { cases: WhatsAppKycCase[]; onSelect: (id: string) => void }) {
+  const rows = cases.slice(0, 12);
+  if (!rows.length) return <EmptyPanelText text="No cases available for heatmap." />;
+  return (
+    <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+      {rows.map((caseItem) => {
+        const score = caseItem.risk?.score ?? 50;
+        const bg = score >= 80 ? "bg-[#dff5eb] border-[#6bc89f]" : score >= 60 ? "bg-[#fff3cd] border-[#ddb85a]" : "bg-[#ffe1dc] border-[#e06b5b]";
+        return (
+          <button key={caseItem.id} type="button" onClick={() => onSelect(caseItem.id)} className={`rounded-md border p-3 text-left shadow-sm transition hover:-translate-y-0.5 ${bg}`}>
+            <p className="font-black text-[#102033]">{caseItem.reference}</p>
+            <p className="mt-1 text-xs text-[#365468]">{caseItem.tenant} / {friendlyStatus(caseItem)}</p>
+            <p className="mt-2 text-xl font-black text-[#102033]">{caseItem.risk?.score ?? "-"}</p>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function TrendPanel({ cases }: { cases: WhatsAppKycCase[] }) {
+  const days = buildDailyTrends(cases);
+  const max = Math.max(1, ...days.map((day) => day.total));
+  return (
+    <div className="rounded-md border border-[#c6d1d4] bg-[#f8fbfb] p-4 shadow-sm">
+      <h3 className="text-lg font-black text-[#102033]">Weekly Trend</h3>
+      <div className="mt-4 flex h-36 items-end gap-2 rounded-md border border-[#d4dde0] bg-white p-3">
+        {days.map((day) => (
+          <div key={day.label} className="flex h-full flex-1 flex-col justify-end gap-1">
+            <div className="rounded-t bg-[#0f8f70]" style={{ height: `${Math.max(8, (day.approved / max) * 92)}%` }} title={`${day.approved} approved`} />
+            <div className="rounded-t bg-[#c2382b]" style={{ height: `${Math.max(4, ((day.total - day.approved) / max) * 46)}%` }} title={`${day.total - day.approved} review or failed`} />
+            <p className="text-center text-[11px] font-bold text-[#365468]">{day.label}</p>
+          </div>
+        ))}
+      </div>
+      <div className="mt-4 grid grid-cols-2 gap-2">
+        <MiniStat label="Weekly Volume" value={String(days.reduce((sum, day) => sum + day.total, 0))} color="#1d6ea3" />
+        <MiniStat label="Weekly Approved" value={String(days.reduce((sum, day) => sum + day.approved, 0))} color="#087f5b" />
+      </div>
+    </div>
+  );
+}
+function MetaTwilioConnectivityPanel({ payload, connectivityTest }: { payload: DashboardPayload; connectivityTest: { status: string; checkedAt: string } | null }) {
+  const connectivity = payload.connectivity;
+  if (!connectivity) return <EmptyPanelText text="Connectivity proof has not loaded yet." />;
+
+  const wabaTone = connectivity.waba.connected ? "pass" : "review";
+  const wabaStatus = connectivity.waba.connected ? "Connected" : "Disconnected";
+  const inboundRows = connectivity.inboundTraffic;
+  const traceRows = connectivity.messageTraces;
+
+  return (
+    <div className="space-y-4">
+      <div className="grid gap-3 lg:grid-cols-3">
+        <div className="rounded-md border border-[#c6d1d4] bg-white p-3 shadow-sm">
+          <div className="flex items-center justify-between gap-3">
+            <p className="text-sm font-black text-[#102033]">Meta WABA Number</p>
+            <span className={`rounded px-2 py-1 text-xs font-black ${connectivity.waba.connected ? "bg-[#123528] text-[#80f0b2]" : "bg-[#3a1818] text-[#ff9b8e]"}`}>{wabaStatus}</span>
+          </div>
+          <p className="mt-3 text-2xl font-black text-[#102033]">{connectivity.waba.displayNumber}</p>
+          <InfoLine label="Configured" value={connectivity.waba.configured ? connectivity.waba.configuredNumber : "Missing / mismatch"} status={connectivity.waba.configured ? "pass" : "review"} />
+          <InfoLine label="Last inbound" value={formatUtc(connectivity.waba.lastInboundAt ?? undefined)} status={wabaTone} />
+        </div>
+        <div className="rounded-md border border-[#c6d1d4] bg-white p-3 shadow-sm">
+          <p className="text-sm font-black text-[#102033]">Twilio Configuration Proof</p>
+          <InfoLine label="Account SID" value={connectivity.twilio.accountSid} />
+          <InfoLine label="Mode" value={connectivity.twilio.mode} />
+          <InfoLine label="Webhook" value={connectivity.twilio.webhookEndpoint} />
+          <InfoLine label="Transport" value={connectivity.twilio.transportSender} />
+          <InfoLine label="Logical WABA" value={connectivity.twilio.logicalSender} />
+        </div>
+        <div className="rounded-md border border-[#c6d1d4] bg-white p-3 shadow-sm">
+          <p className="text-sm font-black text-[#102033]">UAT Proof Capture</p>
+          <InfoLine label="Webhook test" value={connectivityTest ? connectivityTest.status : "Not run"} status={connectivityTest?.status.includes("200") ? "pass" : "review"} />
+          <InfoLine label="Tested UTC" value={formatUtc(connectivityTest?.checkedAt)} />
+          <InfoLine label="Last outbound" value={formatUtc(connectivity.twilio.lastOutboundAt ?? undefined)} status={connectivity.twilio.lastOutboundAt ? "pass" : "review"} />
+          <InfoLine label="Persistence" value={payload.persistenceMode === "supabase" ? "Supabase historical traces" : "Memory mode local traces"} status={payload.persistenceMode === "supabase" ? "pass" : "review"} />
+        </div>
+      </div>
+
+      <div className="grid gap-4 xl:grid-cols-[1.1fr_1.2fr]">
+        <div>
+          <h3 className="mb-2 text-sm font-black uppercase tracking-[0.08em] text-[#9eb0bd]">Inbound Meta Traffic</h3>
+          {inboundRows.length ? <TraceTable traces={inboundRows} compact /> : <EmptyPanelText text="No inbound Meta -> Twilio -> backend traffic captured yet." />}
+        </div>
+        <div>
+          <h3 className="mb-2 text-sm font-black uppercase tracking-[0.08em] text-[#9eb0bd]">Message Trace Log</h3>
+          {traceRows.length ? <TraceTable traces={traceRows} /> : <EmptyPanelText text="Send an OTP or receive an inbound reply to create trace evidence." />}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function TraceTable({ traces, compact = false }: { traces: WhatsAppTrace[]; compact?: boolean }) {
+  return (
+    <div className="overflow-x-auto rounded-md border border-[#263240]">
+      <table className="w-full min-w-[640px] table-fixed text-left text-xs">
+        <thead className="bg-[#202734] uppercase text-[#98aaba]">
+          <tr>
+            <th className="w-28 px-3 py-2">UTC</th>
+            <th className="w-24 px-3 py-2">Direction</th>
+            <th className="w-28 px-3 py-2">Case</th>
+            <th className="w-32 px-3 py-2">SID</th>
+            {!compact && <th className="w-36 px-3 py-2">Route</th>}
+            <th className="px-3 py-2">Status / Preview</th>
+          </tr>
+        </thead>
+        <tbody>
+          {traces.slice(0, compact ? 8 : 12).map((trace) => (
+            <tr key={trace.id} className="border-t border-[#263240]">
+              <td className="px-3 py-2 font-mono text-[#d8e2ea]">{formatUtc(trace.occurredAt).slice(5)}</td>
+              <td className={trace.direction === "inbound" ? "px-3 py-2 font-bold text-[#8dd6ff]" : "px-3 py-2 font-bold text-[#80f0b2]"}>{trace.direction}</td>
+              <td className="break-words px-3 py-2 font-bold text-white">{trace.caseReference ?? trace.caseId ?? "Unlinked"}</td>
+              <td className="break-words px-3 py-2 font-mono text-[#c8d6df]">{trace.messageSid || "-"}</td>
+              {!compact && <td className="break-words px-3 py-2 text-[#9eb0bd]">{trace.transportSender ?? trace.from} {"->"} {trace.logicalSender ?? trace.to}</td>}
+              <td className="break-words px-3 py-2 text-[#d8e2ea]"><span className="font-bold text-[#ffd76a]">{trace.status}</span>{trace.bodyPreview ? ` / ${trace.bodyPreview}` : ""}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
 function BulkPanel({ batch, queueTotals }: { batch: BulkBatch | null; queueTotals: { waiting: number; active: number; completed: number; failed: number } }) {
   const processed = batch ? Math.max(0, batch.validCount - queueTotals.waiting - queueTotals.active) : 0;
   const progress = batch?.validCount ? Math.min(100, Math.round((processed / batch.validCount) * 100)) : 0;
@@ -506,10 +875,10 @@ function AuditPanel({ caseItem, roleView }: { caseItem: WhatsAppKycCase | null; 
   return (
     <div className="space-y-3">
       {events.map((event) => (
-        <div key={event.id} className="grid grid-cols-[72px_1fr] gap-3 border-b border-[#263240] pb-2 text-sm">
+        <div key={event.id} className="grid grid-cols-[72px_1fr] gap-3 border-b border-[#d4dde0] pb-2 text-sm">
           <p className="font-mono text-[#e8f0f6]">{formatTime(event.timestamp)}</p>
           <div>
-            <p className="font-semibold text-white">{humanizeAction(event.action)}</p>
+            <p className="font-semibold text-[#102033]">{humanizeAction(event.action)}</p>
             {roleView === "Admin" && <p className="mt-1 text-xs text-[#8ea4b5]">{event.actorRole} / {event.actorId}</p>}
           </div>
         </div>
@@ -531,10 +900,10 @@ function AuditTimeline({ caseItem }: { caseItem: WhatsAppKycCase | null }) {
     <div className="relative space-y-0 pl-5">
       <div className="absolute bottom-2 left-[7px] top-2 w-px bg-[#3a4655]" />
       {events.map((event) => (
-        <div key={event.id} className="relative border-b border-[#263240] py-3 pl-4">
+        <div key={event.id} className="relative border-b border-[#d4dde0] py-3 pl-4">
           <span className="absolute left-[-22px] top-4 size-3 rounded-full bg-[#d9e5ee] ring-4 ring-[#111923]" />
           <div className="flex items-center justify-between gap-3">
-            <p className="font-semibold text-white">{humanizeAction(event.action)}</p>
+            <p className="font-semibold text-[#102033]">{humanizeAction(event.action)}</p>
             <p className="font-mono text-xs text-[#9eb0bd]">{formatTime(event.timestamp)}</p>
           </div>
           <p className="mt-1 text-xs text-[#8ea4b5]">{formatUtc(event.timestamp)}</p>
@@ -569,7 +938,7 @@ function EvidencePreview({ label, value }: { label: string; value: string }) {
   const isPdf = value.startsWith("data:application/pdf");
   return (
     <div className="overflow-hidden rounded-md border border-[#263240] bg-[#0e151d]">
-      <div className="border-b border-[#263240] px-3 py-2 text-sm font-semibold text-white">{label}</div>
+      <div className="border-b border-[#d4dde0] px-3 py-2 text-sm font-semibold text-[#102033]">{label}</div>
       {isImage ? (
         // Browser-selected evidence is stored as a data URL in the prototype case payload.
         // eslint-disable-next-line @next/next/no-img-element
@@ -592,29 +961,32 @@ function RiskPanel({ riskDistribution, decisionDistribution }: { riskDistributio
   const maxRiskValue = Math.max(1, ...riskDistribution.map((item) => item.value));
   return (
     <div className="space-y-5">
-      <div className="flex h-40 items-end gap-6 overflow-hidden border-b border-[#334150] px-3">
+      <div className="rounded-md border border-[#d4dde0] bg-[#f8fbfb] p-3">
+        <p className="text-sm font-black uppercase tracking-[0.08em] text-[#365468]">Risk Breakdown</p>
+        <div className="mt-3 flex h-40 items-end gap-6 overflow-hidden border-b border-[#d4dde0] px-3">
         {riskDistribution.map((item) => (
           <div key={item.label} className="flex h-full flex-1 flex-col items-center justify-end gap-2">
-            <p className="text-sm font-bold text-white">{item.value}</p>
+            <p className="text-sm font-black text-[#102033]">{item.value}</p>
             <div className="w-full rounded-t" style={{ height: `${Math.max(12, Math.round((item.value / maxRiskValue) * 96))}px`, background: item.color }} />
-            <p className="text-sm font-semibold text-[#c9d4dd]">{item.label}</p>
+            <p className="text-sm font-black text-[#102033]">{item.label}</p>
           </div>
         ))}
+        </div>
       </div>
       <div className="grid gap-4 sm:grid-cols-[1fr_132px] sm:items-center">
         <div className="space-y-2 text-sm">
-          <p className="font-semibold text-white">Decisions</p>
+          <p className="font-black text-[#102033]">Decision Outcomes</p>
           {decisionDistribution.map((item) => (
             <div key={item.label} className="flex items-center gap-2">
               <span className="size-3 rounded-sm" style={{ background: item.color }} />
-              <span className="text-[#c9d4dd]">{item.label}: {item.value}</span>
+              <span className="font-semibold text-[#365468]">{item.label}: {item.value}</span>
             </div>
           ))}
         </div>
         <div className="mx-auto grid size-32 place-items-center rounded-full" style={{ background: `conic-gradient(#26b86f 0 ${passPercent}%, #ef4444 ${passPercent}% 100%)` }}>
-          <div className="grid size-20 place-items-center rounded-full bg-[#111923] text-center">
-            <p className="text-2xl font-black text-white">{passPercent}%</p>
-            <p className="text-xs text-[#c9d4dd]">Pass</p>
+          <div className="grid size-20 place-items-center rounded-full bg-white text-center shadow-inner">
+            <p className="text-2xl font-black text-[#102033]">{passPercent}%</p>
+            <p className="text-xs font-bold text-[#365468]">Pass</p>
           </div>
         </div>
       </div>
@@ -641,7 +1013,7 @@ function SponsorCaseSnapshot({ caseItem }: { caseItem: WhatsAppKycCase | null })
       <MiniStat label="Risk Score" value={String(caseItem.risk?.score ?? "Pending")} color="#ffac66" />
       <MiniStat label="Provider" value={caseItem.tenant} color="#80f0b2" />
       <div className="sm:col-span-2">
-        <InfoLine label="Outcome" value={friendlyStatus(caseItem)} />
+        <StatusPillLine label="Outcome" value={friendlyStatus(caseItem)} tone={isApprovedCase(caseItem) ? "pass" : isRejectedCase(caseItem) ? "fail" : "review"} />
         <InfoLine label="RICA Proof" value={proofStatus.label} status={proofStatus.status} />
         <InfoLine label="Updated UTC" value={formatUtc(caseItem.updatedAt)} />
       </div>
@@ -649,15 +1021,83 @@ function SponsorCaseSnapshot({ caseItem }: { caseItem: WhatsAppKycCase | null })
   );
 }
 
-function SponsorExportPanel({ cases, generatedAt }: { cases: WhatsAppKycCase[]; generatedAt: string }) {
+function SponsorExportPanel({
+  cases,
+  batches,
+  generatedAt,
+  reportMode,
+  onModeChange,
+}: {
+  cases: WhatsAppKycCase[];
+  batches: BulkBatch[];
+  generatedAt: string;
+  reportMode: ReportMode;
+  onModeChange: (mode: ReportMode) => void;
+}) {
+  const approved = cases.filter(isApprovedCase).length;
+  const failed = cases.filter(isRejectedCase).length;
+  const review = Math.max(0, cases.length - approved - failed);
+  const readiness = cases.length ? Math.round((approved / cases.length) * 100) : 0;
+  const bulkRows = batches.reduce((sum, batch) => sum + batch.rowCount, 0);
+  const bulkValid = batches.reduce((sum, batch) => sum + batch.validCount, 0);
+  const bulkErrors = batches.reduce((sum, batch) => sum + batch.errorCount, 0);
+  const bulkReadiness = bulkRows ? Math.round((bulkValid / bulkRows) * 100) : 0;
+  const modeTitle =
+    reportMode === "single"
+      ? "Single RICA/FICA case evidence"
+      : "Bulk campaign compliance evidence";
   return (
-    <div className="space-y-4 text-sm text-[#b8c8d4]">
-      <p>Executive export includes case reference, MSISDN, provider, status, risk score, decision, and UTC update timestamp.</p>
-      <InfoLine label="Rows Ready" value={String(cases.length)} />
+    <div className="relative overflow-hidden rounded-md border border-[#9bd6b8] bg-[#f8fbfb] p-4 text-sm text-[#365468] shadow-sm">
+      <div className="pointer-events-none absolute right-4 top-4 rotate-6 rounded border-2 border-[#9bd6b8] px-4 py-2 text-xs font-black uppercase tracking-[0.16em] text-[#087f5b] opacity-70">Audit-Proof</div>
+      <p className="text-xs font-black uppercase tracking-[0.14em] text-[#087f5b]">Sponsor Export</p>
+      <h3 className="mt-2 max-w-lg text-2xl font-black leading-tight text-[#102033]">{modeTitle}</h3>
+      <div className="mt-4 flex flex-wrap gap-2">
+        <button type="button" onClick={() => onModeChange("single")} className={`rounded-md px-3 py-2 text-xs font-black ${reportMode === "single" ? "bg-[#102033] text-white" : "border border-[#c6d1d4] bg-white text-[#102033]"}`}>
+          Single RICA/FICA
+        </button>
+        <button type="button" onClick={() => onModeChange("bulk")} className={`rounded-md px-3 py-2 text-xs font-black ${reportMode === "bulk" ? "bg-[#102033] text-white" : "border border-[#c6d1d4] bg-white text-[#102033]"}`}>
+          Bulk Campaign
+        </button>
+      </div>
+      <div className="mt-4 flex flex-wrap gap-2 pr-28">
+        {["MTN", "Vodacom", "Telkom", "Cell C"].map((name) => <span key={name} className="rounded-md border border-[#c6d1d4] bg-white px-3 py-2 text-xs font-black text-[#102033] shadow-sm">{name}</span>)}
+      </div>
+      {reportMode === "single" ? (
+        <div className="mt-4 grid grid-cols-3 gap-2">
+          <MiniStat label="Approved" value={String(approved)} color="#087f5b" />
+          <MiniStat label="Review" value={String(review)} color="#b76b00" />
+          <MiniStat label="Failed" value={String(failed)} color="#c2382b" />
+        </div>
+      ) : (
+        <div className="mt-4 grid grid-cols-3 gap-2">
+          <MiniStat label="Batch Rows" value={String(bulkRows)} color="#1d6ea3" />
+          <MiniStat label="Valid MSISDNs" value={String(bulkValid)} color="#087f5b" />
+          <MiniStat label="Row Errors" value={String(bulkErrors)} color="#c2382b" />
+        </div>
+      )}
+      <div className="mt-3 rounded-md border border-[#d4dde0] bg-white p-3">
+        <div className="flex items-center justify-between gap-3">
+          <span className="font-black text-[#102033]">Compliance readiness</span>
+          <span className="text-2xl font-black text-[#087f5b]">{reportMode === "single" ? readiness : bulkReadiness}%</span>
+        </div>
+        <div className="mt-2 h-3 overflow-hidden rounded-full bg-[#dfe7e5]">
+          <div className="h-full rounded-full bg-[#087f5b]" style={{ width: `${Math.max(5, reportMode === "single" ? readiness : bulkReadiness)}%` }} />
+        </div>
+      </div>
       <InfoLine label="Snapshot UTC" value={formatUtc(generatedAt)} />
-      <button type="button" onClick={() => downloadCasesCsv(cases)} className="rounded-md bg-[#28c989] px-4 py-2 text-sm font-bold text-[#071118]">
-        Download Sponsor CSV
-      </button>
+      <InfoLine
+        label="Compliance pack"
+        value={reportMode === "single" ? "Per-case RICA/FICA outcome, risk score, audit trace, GPS/IP/device proof" : "Provider batch totals, MSISDN row outcomes, queue status, row error proof"}
+        status="pass"
+      />
+      <div className="mt-4 flex flex-wrap gap-2">
+        <button type="button" onClick={() => downloadSponsorCsv(cases, batches, reportMode, reportMode === "single" ? "kyc-now-single-rica-fica-report.csv" : "kyc-now-bulk-campaign-report.csv")} className="rounded-md bg-[#0f8f70] px-4 py-2 text-sm font-bold text-white">
+          Download Excel CSV
+        </button>
+        <button type="button" onClick={() => window.print()} className="rounded-md border border-[#6d7d86] bg-white px-4 py-2 text-sm font-bold text-[#102033]">
+          Export PDF View
+        </button>
+      </div>
     </div>
   );
 }
@@ -675,7 +1115,7 @@ function ProviderFunnel({ cases }: { cases: WhatsAppKycCase[] }) {
     <div className="space-y-3">
       {stages.map((stage, index) => (
         <div key={stage.label} className="mx-auto text-center" style={{ width: `${Math.max(48, 100 - index * 12)}%` }}>
-          <div className="rounded-md px-3 py-3 font-black text-white shadow-[0_10px_24px_rgba(0,0,0,0.28)]" style={{ background: stage.color, opacity: 0.72 + (stage.value / max) * 0.28 }}>
+          <div className="rounded-md px-3 py-3 font-black text-[#102033] shadow-[0_10px_24px_rgba(0,0,0,0.28)]" style={{ background: stage.color, opacity: 0.72 + (stage.value / max) * 0.28 }}>
             {stage.label}: {stage.value}
           </div>
         </div>
@@ -693,10 +1133,10 @@ function ProviderPanel({ cases, batches }: { cases: WhatsAppKycCase[]; batches: 
         const providerCases = cases.filter((caseItem) => caseItem.tenant === provider);
         const providerBatches = batches.filter((batch) => batch.provider === provider);
         return (
-          <div key={provider} className="rounded-md border border-[#263240] bg-[#0e151d] p-3">
+          <div key={provider} className="rounded-md border border-[#c6d1d4] bg-white p-3 shadow-sm">
             <div className="flex items-center justify-between">
-              <p className="font-semibold text-white">{provider}</p>
-              <p className="text-sm text-[#80f0b2]">{providerCases.length} cases</p>
+              <p className="font-semibold text-[#102033]">{provider}</p>
+              <p className="text-sm font-bold text-[#087f5b]">{providerCases.length} cases</p>
             </div>
             <div className="mt-2 grid grid-cols-3 gap-2 text-xs">
               <MiniStat label="Batches" value={String(providerBatches.length)} color="#8dd6ff" />
@@ -712,7 +1152,7 @@ function ProviderPanel({ cases, batches }: { cases: WhatsAppKycCase[]; batches: 
 
 function MnoRowsPanel({ batch, cases }: { batch: BulkBatch | null; cases: WhatsAppKycCase[] }) {
   if (!batch) return <EmptyPanelText text="Select a batch to inspect row-level MSISDN outcomes." />;
-  const rows = batch.rows.slice(0, 8);
+  const rows = Array.isArray(batch.rows) ? batch.rows.slice(0, 8) : [];
   return (
     <div className="overflow-x-auto">
       <table className="w-full min-w-[560px] table-fixed text-left text-sm">
@@ -729,12 +1169,12 @@ function MnoRowsPanel({ batch, cases }: { batch: BulkBatch | null; cases: WhatsA
           {rows.map((row) => {
             const caseItem = cases.find((candidate) => candidate.id === row.caseId);
             return (
-              <tr key={row.id} className="border-b border-[#1d2834]">
-                <td className="py-3 text-[#d8e2ea]">{row.rowNumber}</td>
-                <td className="break-words py-3 text-white">{row.phoneNumber}</td>
-                <td className="break-words py-3 text-[#ffd76a]">{caseItem ? friendlyStatus(caseItem) : row.status}</td>
-                <td className="py-3 text-[#72e67d]">{caseItem?.risk?.score ?? "-"}</td>
-                <td className="break-words py-3 text-[#9eb0bd]">{row.towerId || caseItem?.residenceEvidence?.towerId || "-"}</td>
+              <tr key={row.id || `${batch.id}-${row.rowNumber}-${row.phoneNumber}`} className="border-b border-[#1d2834]">
+                <td className="py-3 text-[#365468]">{row.rowNumber}</td>
+                <td className="break-words py-3 font-semibold text-[#102033]">{row.phoneNumber}</td>
+                <td className="break-words py-3 font-semibold text-[#b76b00]">{caseItem ? friendlyStatus(caseItem) : row.status}</td>
+                <td className="py-3 font-black text-[#087f5b]">{caseItem?.risk?.score ?? "-"}</td>
+                <td className="break-words py-3 text-[#365468]">{row.towerId || caseItem?.residenceEvidence?.towerId || "-"}</td>
               </tr>
             );
           })}
@@ -760,9 +1200,9 @@ function QueueHealthPanel({ queue, queueTotals }: { queue: QueueSnapshot; queueT
   return (
     <div className="grid gap-3">
       {queue.queues.map((entry) => (
-        <div key={entry.key} className="rounded-md border border-[#263240] bg-[#0e151d] p-3">
+        <div key={entry.key} className="rounded-md border border-[#c6d1d4] bg-white p-3 shadow-sm">
           <div className="flex items-center justify-between gap-3">
-            <p className="font-semibold text-white">{entry.name}</p>
+            <p className="font-semibold text-[#102033]">{entry.name}</p>
             <p className="text-xs text-[#ff8b75]">{entry.counts.failed ?? 0} failed</p>
           </div>
           <div className="mt-3 grid grid-cols-4 gap-2 text-xs">
@@ -785,8 +1225,8 @@ function QueuePanel({ queue }: { queue: QueueSnapshot }) {
   return (
     <div className="space-y-3">
       {queue.queues.map((entry) => (
-        <div key={entry.key} className="rounded-md border border-[#263240] bg-[#0e151d] p-3">
-          <p className="font-semibold text-white">{entry.name}</p>
+        <div key={entry.key} className="rounded-md border border-[#c6d1d4] bg-white p-3 shadow-sm">
+          <p className="font-semibold text-[#102033]">{entry.name}</p>
           <div className="mt-2 grid grid-cols-5 gap-2 text-xs">
             {(["waiting", "active", "completed", "failed", "delayed"] as const).map((key) => (
               <MiniStat key={key} label={key} value={String(entry.counts[key] ?? 0)} color={key === "failed" ? "#ff745c" : "#8dd6ff"} />
@@ -818,132 +1258,73 @@ function CompletenessPanel({ caseItem }: { caseItem: WhatsAppKycCase | null }) {
   if (!caseItem) return <EmptyPanelText text="Select a case to inspect completeness." />;
   const checks = [
     ["OTP", caseItem.verification.otp?.status === "verified"],
-    ["SA ID", Boolean(caseItem.verification.idValidation?.isValid)],
-    ["ID OCR", Boolean(caseItem.verification.identityDocument)],
+    ["SA ID", Boolean(caseItem.verification.identityDocument)],
     ["Proof / affidavit", Boolean(caseItem.verification.proofOfAddressProvided || caseItem.verification.digitalAffidavitProvided)],
-    ["Affidavit fallback", !caseItem.verification.proofOfAddressDocument?.reviewReason || Boolean(caseItem.affidavit)],
-    ["Selfie", Boolean(caseItem.verification.livenessScore && caseItem.verification.faceMatchScore)],
-    ["Location", Boolean(caseItem.verification.locationShared || caseItem.residenceEvidence?.towerId)],
-  ] as const;
+    ["Selfie", Boolean(caseItem.verification.faceMatchScore)],
+    ["Location", Boolean(caseItem.verification.locationShared || caseItem.residenceEvidence?.gpsCoordinates)],
+    ["Device", Boolean(caseItem.deviceIntelligence?.browserFingerprint || caseItem.deviceIntelligence?.ipAddress)],
+  ] as Array<[string, boolean]>;
+  const done = checks.filter(([, complete]) => complete).length;
+  const percent = Math.round((done / checks.length) * 100);
   return (
-    <div className="grid gap-2">
-      {checks.map(([label, done]) => (
-        <div key={label} className="flex items-center justify-between rounded border border-[#273341] px-3 py-2 text-sm">
-          <span className="text-[#d7e1e8]">{label}</span>
-          <span className={done ? "text-[#72e67d]" : "text-[#ffd76a]"}>{done ? "Captured" : "Pending"}</span>
+    <div className="grid gap-4 sm:grid-cols-[132px_1fr] sm:items-center">
+      <div className="mx-auto grid size-32 place-items-center rounded-full" style={{ background: `conic-gradient(#087f5b 0 ${percent}%, #dfe7e5 ${percent}% 100%)` }}>
+        <div className="grid size-24 place-items-center rounded-full bg-white text-center shadow-inner">
+          <p className="text-3xl font-black text-[#102033]">{percent}%</p>
+          <p className="text-xs font-bold text-[#607484]">complete</p>
         </div>
-      ))}
+      </div>
+      <div className="grid gap-2 sm:grid-cols-2">
+        {checks.map(([label, complete]) => (
+          <div key={label} className={`flex items-center justify-between rounded-md border px-3 py-2 text-sm font-bold ${complete ? "border-[#9bd6b8] bg-[#e1f5ec] text-[#087f5b]" : "border-[#e0be63] bg-[#fff4d8] text-[#9a6500]"}`}>
+            <span className="flex min-w-0 items-center gap-2">
+              <span className={`grid size-6 shrink-0 place-items-center rounded-full text-xs font-black ${complete ? "bg-[#087f5b] text-white" : "bg-[#b76b00] text-white"}`}>
+                {complete ? "OK" : "!"}
+              </span>
+              <span>{label}</span>
+            </span>
+            <span className="rounded bg-white/80 px-2 py-1 text-xs">{complete ? "Captured" : "Pending"}</span>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
 
-function getProofStatus(caseItem: WhatsAppKycCase): { label: string; status: "pass" | "review" } {
-  const proof = caseItem.verification.proofOfAddressDocument;
-  if (proof?.accepted) {
-    return {
-      label: `${proof.documentType} accepted / ${Math.round(proof.simulatedOcrScore * 100)}%`,
-      status: "pass",
-    };
-  }
-
-  if (proof?.reviewReason) {
-    return {
-      label: `${proof.documentType} needs RICA review / ${Math.round(proof.simulatedOcrScore * 100)}%`,
-      status: "review",
-    };
-  }
-
-  if (proof) {
-    return {
-      label: `${proof.documentType} pending review / ${Math.round(proof.simulatedOcrScore * 100)}%`,
-      status: "review",
-    };
-  }
-
-  if (caseItem.affidavit) {
-    return {
-      label: `Affidavit AI ${Math.round((caseItem.affidavit.aiValidationScore ?? 0) * 100)}%`,
-      status: "review",
-    };
-  }
-
-  return { label: "Pending", status: "review" };
-}
-
-function buildRiskFactors(caseItem: WhatsAppKycCase) {
-  const idCheckScore = caseItem.verification.idValidation?.isValid ? 90 : 35;
-  const identity = caseItem.verification.identityDocument;
-  const ocrScore = identity
-    ? identity.matchedEnteredId === false
-      ? 45
-      : Math.round(identity.ocrConfidence * 100)
-    : 0;
-  const selfieScore = Math.round((((caseItem.verification.livenessScore ?? 0) + (caseItem.verification.faceMatchScore ?? 0)) / 2) * 100);
-  const proof = caseItem.verification.proofOfAddressDocument;
-  const proofScore = proof?.accepted
-    ? Math.round(proof.simulatedOcrScore * 100)
-    : caseItem.affidavit
-      ? Math.round((caseItem.affidavit.aiValidationScore ?? 0.76) * 100)
-      : proof
-        ? Math.round(proof.simulatedOcrScore * 100)
-        : 0;
-  const hasGps = Boolean(caseItem.geoCapture || caseItem.residenceEvidence?.gpsCoordinates);
-  const hasTower = Boolean(caseItem.residenceEvidence?.towerId || caseItem.geoCapture?.towerId || caseItem.staffInitiation.bulkCampaign?.towerId);
-  const locationScore = hasGps && hasTower ? 92 : hasGps ? 78 : hasTower ? 58 : 0;
-
-  return [
-    {
-      label: "ID checksum",
-      score: idCheckScore,
-      color: idCheckScore >= 80 ? "#5dbd74" : "#ef4444",
-      reason: caseItem.verification.idValidation?.isValid ? "Valid South African ID checksum." : "ID checksum is pending or failed.",
-    },
-    {
-      label: "OCR match",
-      score: ocrScore,
-      color: ocrScore >= 80 ? "#5dbd74" : ocrScore >= 60 ? "#ffc84a" : "#ef4444",
-      reason: identity?.matchedEnteredId === false ? "Uploaded ID does not match entered ID." : identity ? "Identity document OCR captured." : "Identity document upload pending.",
-    },
-    {
-      label: "Proof / affidavit",
-      score: proofScore,
-      color: proofScore >= 80 && proof?.accepted ? "#5dbd74" : proofScore >= 60 || caseItem.affidavit ? "#ffc84a" : "#ef4444",
-      reason: proof?.reviewReason ?? (caseItem.affidavit ? "Affidavit fallback captured for RICA review." : proof?.accepted ? "Proof of address accepted." : "Proof or affidavit pending."),
-    },
-    {
-      label: "Selfie match",
-      score: selfieScore,
-      color: selfieScore >= 82 ? "#5dbd74" : selfieScore >= 65 ? "#ffc84a" : "#ef4444",
-      reason: selfieScore ? "Selfie/liveness evidence captured." : "Selfie and liveness pending.",
-    },
-    {
-      label: "GPS / tower",
-      score: locationScore,
-      color: locationScore >= 80 ? "#5dbd74" : locationScore >= 55 ? "#ffc84a" : "#ef4444",
-      reason: hasGps ? "GPS evidence captured." : hasTower ? "Tower evidence is provisional and flags review." : "GPS or tower evidence missing.",
-    },
-  ];
-}
-
 function workflowTone(tone: "pass" | "review" | "fail") {
-  if (tone === "pass") return "bg-[#67c44a] text-[#071118]";
-  if (tone === "review") return "bg-[#ffc84a] text-[#151006]";
-  return "bg-[#ef4444] text-white";
+  if (tone === "pass") return "bg-[#e1f5ec] text-[#087f5b]";
+  if (tone === "review") return "bg-[#fff4d8] text-[#9a6500]";
+  return "bg-[#ffe1dc] text-[#b42318]";
 }
 
 function InfoLine({ label, value, strong, status }: { label: string; value: string; strong?: boolean; status?: "pass" | "review" }) {
   return (
-    <div className="grid min-h-10 grid-cols-[112px_1fr] items-center gap-4 border-b border-[#263240] pb-2">
-      <span className="text-[#c5d0d9]">{label}</span>
-      <span className={`min-w-0 break-words text-right ${strong ? "font-black text-white" : "font-semibold text-[#eef4f8]"} ${status === "pass" ? "text-[#80f0b2]" : ""} ${status === "review" ? "text-[#ffd76a]" : ""}`}>{value}</span>
+    <div className="grid min-h-10 grid-cols-[112px_1fr] items-center gap-4 border-b border-[#d4dde0] pb-2">
+      <span className="font-medium text-[#365468]">{label}</span>
+      <span className={`min-w-0 break-words text-right ${strong ? "font-black text-[#102033]" : "font-semibold text-[#102033]"} ${status === "pass" ? "text-[#087f5b]" : ""} ${status === "review" ? "text-[#b76b00]" : ""}`}>{value}</span>
+    </div>
+  );
+}
+
+function StatusPillLine({ label, value, tone }: { label: string; value: string; tone: "pass" | "review" | "fail" }) {
+  const palette = {
+    pass: "bg-[#e1f5ec] text-[#087f5b] border-[#9bd6b8]",
+    review: "bg-[#fff4d8] text-[#9a6500] border-[#e0be63]",
+    fail: "bg-[#ffe1dc] text-[#b42318] border-[#e58c7f]",
+  }[tone];
+  const symbol = tone === "pass" ? "OK" : tone === "review" ? "!" : "X";
+  return (
+    <div className="grid min-h-10 grid-cols-[112px_1fr] items-center gap-4 border-b border-[#d4dde0] pb-2">
+      <span className="font-medium text-[#365468]">{label}</span>
+      <span className={`justify-self-end rounded-full border px-3 py-1 text-xs font-black uppercase tracking-[0.08em] ${palette}`}>{symbol} {value}</span>
     </div>
   );
 }
 
 function MiniStat({ label, value, color }: { label: string; value: string; color: string }) {
   return (
-    <div className="rounded-md border border-[#263240] bg-[#0e151d] p-3">
-      <p className="text-xs text-[#9eb0bd]">{label}</p>
+    <div className="rounded-md border border-[#c6d1d4] bg-white p-3 shadow-sm">
+      <p className="text-xs font-bold uppercase tracking-[0.06em] text-[#607484]">{label}</p>
       <p className="mt-1 text-xl font-black" style={{ color }}>{value}</p>
     </div>
   );
@@ -955,7 +1336,7 @@ function ProgressBar({ value, label }: { value: number; label: string }) {
       <div className="h-3 overflow-hidden rounded-full bg-[#394554]">
         <div className="h-full rounded-full bg-[#61dd71]" style={{ width: `${value}%` }} />
       </div>
-      <p className="mt-2 text-right text-sm font-semibold text-white">{label}</p>
+      <p className="mt-2 text-right text-sm font-semibold text-[#102033]">{label}</p>
     </div>
   );
 }
@@ -971,6 +1352,53 @@ function buildMetrics(cases: WhatsAppKycCase[]) {
     approved: cases.filter((caseItem) => isApprovedCase(caseItem)).length,
     highRisk: cases.filter((caseItem) => riskLevel(caseItem) === "High").length,
   };
+}
+
+function buildRiskFactors(caseItem: WhatsAppKycCase) {
+  const idValid = caseItem.verification.idValidation?.isValid ? 90 : caseItem.applicant.idNumber ? 55 : 20;
+  const ocr = caseItem.verification.identityDocument?.ocrConfidence ? Math.round(caseItem.verification.identityDocument.ocrConfidence * 100) : 45;
+  const proof = caseItem.verification.proofOfAddressDocument?.simulatedOcrScore
+    ? Math.round(caseItem.verification.proofOfAddressDocument.simulatedOcrScore * 100)
+    : caseItem.verification.digitalAffidavitProvided
+      ? Math.round((caseItem.affidavit?.aiValidationScore ?? 0.74) * 100)
+      : 40;
+  const selfie = caseItem.verification.faceMatchScore ? Math.round(caseItem.verification.faceMatchScore * 100) : 0;
+  const location = caseItem.verification.locationShared || caseItem.residenceEvidence?.gpsCoordinates ? 100 : caseItem.residenceEvidence?.towerId ? 70 : 0;
+  return [
+    { label: "ID checksum", score: idValid, color: riskColor(idValid), detail: caseItem.verification.idValidation?.isValid ? "Valid South African ID checksum." : "ID checksum requires review.", reason: caseItem.verification.idValidation?.isValid ? undefined : "ID validation incomplete" },
+    { label: "OCR match", score: ocr, color: riskColor(ocr), detail: caseItem.verification.identityDocument?.matchedEnteredId === false ? "Uploaded ID does not match entered ID." : "Document OCR evidence captured.", reason: caseItem.verification.identityDocument?.matchedEnteredId === false ? "Document mismatch" : undefined },
+    { label: "Proof / affidavit", score: proof, color: riskColor(proof), detail: caseItem.verification.proofOfAddressProvided || caseItem.verification.digitalAffidavitProvided ? "Residence evidence available." : "Proof or affidavit pending.", reason: proof < 70 ? "Residence evidence incomplete" : undefined },
+    { label: "Selfie match", score: selfie, color: riskColor(selfie), detail: selfie ? "Selfie/liveness evidence captured." : "Selfie evidence pending.", reason: selfie ? undefined : "Biometric evidence pending" },
+    { label: "GPS / tower", score: location, color: riskColor(location), detail: location >= 100 ? "GPS evidence captured." : location ? "Tower evidence captured; GPS preferred." : "GPS or tower evidence missing.", reason: location >= 100 ? undefined : "GPS evidence not complete" },
+  ];
+}
+
+function riskColor(score: number) {
+  if (score >= 80) return "#087f5b";
+  if (score >= 60) return "#b76b00";
+  return "#c2382b";
+}
+
+function getProofStatus(caseItem: WhatsAppKycCase): { label: string; status: "pass" | "review" } {
+  const proof = caseItem.verification.proofOfAddressDocument;
+  if (proof?.accepted) {
+    const score = proof.simulatedOcrScore ? ` / ${Math.round(proof.simulatedOcrScore * 100)}%` : "";
+    return { label: `Proof of address accepted${score}`, status: "pass" };
+  }
+  if (caseItem.affidavit) {
+    const score = Math.round((caseItem.affidavit.aiValidationScore ?? 0.76) * 100);
+    return { label: `Affidavit fallback captured / ${score}%`, status: "review" };
+  }
+  if (proof?.reviewReason) {
+    return { label: `${proof.reviewReason} / affidavit review required`, status: "review" };
+  }
+  if (caseItem.verification.digitalAffidavitProvided) {
+    return { label: "Digital affidavit captured", status: "review" };
+  }
+  if (caseItem.verification.proofOfAddressProvided) {
+    return { label: "Proof of address captured for review", status: "review" };
+  }
+  return { label: "Proof of address pending", status: "review" };
 }
 
 function buildRiskDistribution(cases: WhatsAppKycCase[]) {
@@ -1057,7 +1485,22 @@ function formatTime(value?: string) {
   return date.toISOString().slice(11, 16);
 }
 
-function downloadCasesCsv(cases: WhatsAppKycCase[]) {
+function buildDailyTrends(cases: WhatsAppKycCase[]) {
+  const today = new Date();
+  return Array.from({ length: 7 }, (_, index) => {
+    const day = new Date(today);
+    day.setUTCDate(today.getUTCDate() - (6 - index));
+    const key = day.toISOString().slice(0, 10);
+    const dayCases = cases.filter((caseItem) => caseItem.createdAt.slice(0, 10) === key || caseItem.updatedAt.slice(0, 10) === key);
+    return {
+      label: key.slice(5),
+      total: dayCases.length,
+      approved: dayCases.filter(isApprovedCase).length,
+    };
+  });
+}
+
+function downloadCasesCsv(cases: WhatsAppKycCase[], fileName = "kyc-now-dashboard-cases.csv") {
   const header = ["caseReference", "msisdn", "provider", "status", "riskScore", "decision", "updatedAtUtc"];
   const rows = cases.map((caseItem) =>
     [
@@ -1074,11 +1517,135 @@ function downloadCasesCsv(cases: WhatsAppKycCase[]) {
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = url;
-  anchor.download = "kyc-now-dashboard-cases.csv";
+  anchor.download = fileName;
   anchor.click();
   URL.revokeObjectURL(url);
+}
+
+function downloadSponsorCsv(cases: WhatsAppKycCase[], batches: BulkBatch[], mode: ReportMode, fileName: string) {
+  if (mode === "bulk") {
+    downloadBulkCsv(batches, fileName);
+    return;
+  }
+
+  const header = [
+    "reportType",
+    "caseReference",
+    "msisdn",
+    "provider",
+    "applicant",
+    "idNumber",
+    "ficaRicaStatus",
+    "riskScore",
+    "decision",
+    "proofStatus",
+    "gpsCaptured",
+    "towerId",
+    "ipAddress",
+    "deviceCaptured",
+    "evidenceCompletenessPct",
+    "updatedAtUtc",
+  ];
+  const rows = cases.map((caseItem) => {
+    const proofStatus = getProofStatus(caseItem);
+    return [
+      "single_rica_fica",
+      caseItem.reference,
+      caseItem.applicant.phoneNumber ?? caseItem.staffInitiation.customerPhoneNumber,
+      caseItem.tenant,
+      caseItem.applicant.fullName ?? "",
+      caseItem.applicant.idNumber ?? "",
+      friendlyStatus(caseItem),
+      caseItem.risk?.score ?? "",
+      caseItem.risk?.decision ?? "review",
+      proofStatus.label,
+      caseItem.verification.locationShared || caseItem.residenceEvidence?.gpsCoordinates ? "yes" : "no",
+      caseItem.residenceEvidence?.towerId ?? caseItem.geoCapture?.towerId ?? caseItem.staffInitiation.bulkCampaign?.towerId ?? "",
+      caseItem.deviceIntelligence?.ipAddress ?? "",
+      caseItem.deviceIntelligence?.browserFingerprint ? "yes" : "no",
+      evidenceCompletenessPercent(caseItem),
+      caseItem.updatedAt,
+    ].map(csvCell);
+  });
+  downloadCsvRows(header, rows, fileName);
+}
+
+function downloadBulkCsv(batches: BulkBatch[], fileName: string) {
+  const header = [
+    "reportType",
+    "batchReference",
+    "provider",
+    "sourceFileName",
+    "batchStatus",
+    "receivedAtUtc",
+    "rowCount",
+    "validCount",
+    "errorCount",
+    "rowNumber",
+    "msisdn",
+    "caseId",
+    "rowStatus",
+    "towerId",
+    "locationEvidence",
+  ];
+  const rows = batches.flatMap((batch) => {
+    const batchRows = Array.isArray(batch.rows) && batch.rows.length ? batch.rows : [null];
+    return batchRows.map((row) =>
+      [
+        "bulk_campaign",
+        batch.batchReference,
+        batch.provider,
+        batch.sourceFileName,
+        batch.status,
+        batch.receivedAt,
+        batch.rowCount,
+        batch.validCount,
+        batch.errorCount,
+        row?.rowNumber ?? "",
+        row?.phoneNumber ?? "",
+        row?.caseId ?? "",
+        row?.status ?? "",
+        row?.towerId ?? "",
+        row?.locationEvidence ?? "",
+      ].map(csvCell)
+    );
+  });
+  downloadCsvRows(header, rows, fileName);
+}
+
+function downloadCsvRows(header: string[], rows: string[][], fileName: string) {
+  const blob = new Blob([[header, ...rows].map((row) => row.join(",")).join("\n")], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = fileName;
+  anchor.click();
+  URL.revokeObjectURL(url);
+}
+
+function evidenceCompletenessPercent(caseItem: WhatsAppKycCase) {
+  const checks = [
+    caseItem.verification.otp?.status === "verified",
+    Boolean(caseItem.verification.identityDocument),
+    Boolean(caseItem.verification.proofOfAddressProvided || caseItem.verification.digitalAffidavitProvided),
+    Boolean(caseItem.verification.faceMatchScore),
+    Boolean(caseItem.verification.locationShared || caseItem.residenceEvidence?.gpsCoordinates),
+    Boolean(caseItem.deviceIntelligence?.browserFingerprint || caseItem.deviceIntelligence?.ipAddress),
+  ];
+  return Math.round((checks.filter(Boolean).length / checks.length) * 100);
 }
 
 function csvCell(value: unknown) {
   return `"${String(value ?? "").replace(/"/g, '""')}"`;
 }
+
+
+
+
+
+
+
+
+
+
+

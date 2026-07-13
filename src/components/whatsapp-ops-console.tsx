@@ -57,8 +57,12 @@ export function WhatsAppOpsConsole() {
   }
 
   useEffect(() => {
-    void loadCases();
-    void loadRuntimeStatus();
+    const timer = window.setTimeout(() => {
+      void loadCases();
+      void loadRuntimeStatus();
+    }, 0);
+
+    return () => window.clearTimeout(timer);
   }, []);
 
   async function initiateCase() {

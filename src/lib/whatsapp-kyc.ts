@@ -128,6 +128,10 @@ export type OtpRecord = {
   expiresAt: string;
   lastSentAt: string;
   verifiedAt?: string;
+  codeHash?: string;
+  provider?: string;
+  providerReference?: string;
+  channel?: "whatsapp";
 };
 
 export type RiskAssessment = {
@@ -289,7 +293,7 @@ export function createWhatsAppCase(input: StaffInitiationPayload): WhatsAppKycCa
 }
 
 export function applyWebhookEvent(kycCase: WhatsAppKycCase, payload: WhatsAppWebhookPayload) {
-  let nextCase = { ...kycCase, applicant: { ...kycCase.applicant }, verification: { ...kycCase.verification } };
+  const nextCase = { ...kycCase, applicant: { ...kycCase.applicant }, verification: { ...kycCase.verification } };
   const previousStatus = kycCase.status;
   const systemAuditEvents: Array<Omit<AuditLogEntry, "id" | "timestamp" | "caseId">> = [];
 
