@@ -38,6 +38,7 @@ export async function POST(request: NextRequest) {
   });
 
   return NextResponse.json({
+    case: updatedCase,
     provider: providerResult.provider,
     providerReference: providerResult.reference,
     transportSender: providerResult.transportSender,

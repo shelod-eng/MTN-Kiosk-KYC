@@ -144,12 +144,12 @@ export function WhatsAppKycChatDemo() {
       headers: staffHeaders,
       body: JSON.stringify({ caseId: nextCase.id, caseSnapshot: nextCase }),
     });
-    const otpPayload = await readApiJson<{ status?: string; error?: string; devOtp?: string }>(otpResponse);
+    const otpPayload = await readApiJson<{ case?: WhatsAppKycCase; status?: string; error?: string; devOtp?: string }>(otpResponse);
     if (!otpResponse.ok) {
       addMessage("platform", otpPayload.error ?? "Could not dispatch OTP for this queued MSISDN.");
       return;
     }
-    const otpCase = { ...nextCase, status: (otpPayload.status as WhatsAppKycCase["status"]) ?? "otp_pending" };
+    const otpCase = otpPayload.case ?? { ...nextCase, status: (otpPayload.status as WhatsAppKycCase["status"]) ?? "otp_pending" };
     applyCaseUpdate(otpCase);
     setStep("otp");
     addMessage(
@@ -269,7 +269,7 @@ export function WhatsAppKycChatDemo() {
       const response = await fetch("/api/whatsapp/otp/verify", {
         method: "POST",
         headers: staffHeaders,
-        body: JSON.stringify({ caseId: caseItem.id, code }),
+        body: JSON.stringify({ caseId: caseItem.id, code, caseSnapshot: caseItem }),
       });
       const payload = await readApiJson<{ case?: WhatsAppKycCase; error?: string }>(response);
       if (!response.ok || !payload.case) {

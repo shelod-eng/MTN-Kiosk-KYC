@@ -1,11 +1,18 @@
 import { NextRequest, NextResponse } from "next/server";
 import { verifyOtpWithProvider } from "@/lib/provider-adapters";
-import { upsertOtp } from "@/lib/whatsapp-store";
+import { getCase, saveCaseSnapshot, upsertOtp } from "@/lib/whatsapp-store";
+import type { WhatsAppKycCase } from "@/lib/whatsapp-kyc";
 
 export async function POST(request: NextRequest) {
-  const body = (await request.json()) as { caseId?: string; code?: string; attempts?: number };
+  const body = (await request.json()) as { caseId?: string; code?: string; attempts?: number; caseSnapshot?: WhatsAppKycCase };
   if (!body.caseId || !body.code) {
     return NextResponse.json({ error: "Missing caseId or code." }, { status: 400 });
+  }
+
+  const current = await getCase(body.caseId);
+  const snapshotHasOtp = Boolean(body.caseSnapshot?.verification.otp?.codeHash);
+  if (body.caseSnapshot?.id === body.caseId && (!current || (!current.verification.otp?.codeHash && snapshotHasOtp))) {
+    await saveCaseSnapshot(body.caseSnapshot);
   }
 
   const verification = await verifyOtpWithProvider({
