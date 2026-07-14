@@ -603,6 +603,7 @@ function CaseRiskBreakdown({ caseItem }: { caseItem: WhatsAppKycCase | null }) {
 function IdentityPanel({ caseItem }: { caseItem: WhatsAppKycCase | null }) {
   if (!caseItem) return <EmptyPanelText text="Select a case to inspect identity evidence." />;
   const idValidation = caseItem.verification.idValidation;
+  const homeAffairs = caseItem.verification.identityDocument?.homeAffairsVerification;
   return (
     <div className="space-y-4 text-sm">
       <InfoLine label="Full Name" value={caseItem.applicant.fullName ?? "Pending"} strong />
@@ -611,6 +612,8 @@ function IdentityPanel({ caseItem }: { caseItem: WhatsAppKycCase | null }) {
       <InfoLine label="Document Upload" value={caseItem.verification.identityDocument ? `${caseItem.verification.identityDocument.documentType} OCR ${Math.round(caseItem.verification.identityDocument.ocrConfidence * 100)}%` : "Pending"} />
       <InfoLine label="Extracted ID" value={caseItem.verification.identityDocument?.extractedIdNumber ?? "Pending"} />
       <InfoLine label="ID OCR match" value={caseItem.verification.identityDocument?.matchedEnteredId === true ? "Matches entered ID" : caseItem.verification.identityDocument?.matchedEnteredId === false ? "Mismatch" : "Pending"} status={caseItem.verification.identityDocument?.matchedEnteredId === false ? "review" : caseItem.verification.identityDocument?.matchedEnteredId === true ? "pass" : undefined} />
+      <InfoLine label="Home Affairs" value={homeAffairs ? `${homeAffairs.status.toUpperCase()} / ${homeAffairs.mode}` : "DHA-ready check pending"} status={homeAffairs?.matched ? "pass" : "review"} />
+      <InfoLine label="DHA reference" value={homeAffairs?.reference ?? "Pending"} />
     </div>
   );
 }
@@ -1019,7 +1022,7 @@ function AuditPanel({ caseItem, roleView }: { caseItem: WhatsAppKycCase | null; 
 
 function AuditTimeline({ caseItem }: { caseItem: WhatsAppKycCase | null }) {
   if (!caseItem) return <EmptyPanelText text="Select a case to inspect audit timeline." />;
-  const importantActions = ["otp_sent", "otp_verified", "id_checksum_passed", "document_uploaded", "proof_uploaded", "proof_expired", "affidavit_requested", "affidavit_uploaded", "selfie_verified", "final_verification_complete"];
+  const importantActions = ["otp_sent", "otp_verified", "id_checksum_passed", "document_uploaded", "home_affairs_verified", "proof_uploaded", "proof_expired", "affidavit_requested", "affidavit_uploaded", "selfie_verified", "final_verification_complete"];
   const events = caseItem.auditTrail
     .filter((event) => importantActions.includes(event.action))
     .sort((a, b) => a.timestamp.localeCompare(b.timestamp));
@@ -1487,6 +1490,8 @@ function buildMetrics(cases: WhatsAppKycCase[]) {
 function buildRiskFactors(caseItem: WhatsAppKycCase) {
   const idValid = caseItem.verification.idValidation?.isValid ? 90 : caseItem.applicant.idNumber ? 55 : 20;
   const ocr = caseItem.verification.identityDocument?.ocrConfidence ? Math.round(caseItem.verification.identityDocument.ocrConfidence * 100) : 45;
+  const homeAffairs = caseItem.verification.identityDocument?.homeAffairsVerification;
+  const dhaScore = homeAffairs?.matched ? 100 : homeAffairs ? 65 : 45;
   const proof = caseItem.verification.proofOfAddressDocument?.simulatedOcrScore
     ? Math.round(caseItem.verification.proofOfAddressDocument.simulatedOcrScore * 100)
     : caseItem.verification.digitalAffidavitProvided
@@ -1497,6 +1502,7 @@ function buildRiskFactors(caseItem: WhatsAppKycCase) {
   return [
     { label: "ID checksum", score: idValid, color: riskColor(idValid), detail: caseItem.verification.idValidation?.isValid ? "Valid South African ID checksum." : "ID checksum requires review.", reason: caseItem.verification.idValidation?.isValid ? undefined : "ID validation incomplete" },
     { label: "OCR match", score: ocr, color: riskColor(ocr), detail: caseItem.verification.identityDocument?.matchedEnteredId === false ? "Uploaded ID does not match entered ID." : "Document OCR evidence captured.", reason: caseItem.verification.identityDocument?.matchedEnteredId === false ? "Document mismatch" : undefined },
+    { label: "Home Affairs", score: dhaScore, color: riskColor(dhaScore), detail: homeAffairs ? `${homeAffairs.provider} ${homeAffairs.mode} returned ${homeAffairs.status}.` : "DHA-ready verification pending after ID upload.", reason: homeAffairs?.matched ? undefined : "DHA identity match awaiting review or live provider" },
     { label: "Proof / affidavit", score: proof, color: riskColor(proof), detail: caseItem.verification.proofOfAddressProvided || caseItem.verification.digitalAffidavitProvided ? "Residence evidence available." : "Proof or affidavit pending.", reason: proof < 70 ? "Residence evidence incomplete" : undefined },
     { label: "Selfie match", score: selfie, color: riskColor(selfie), detail: selfie ? "Selfie/liveness evidence captured." : "Selfie evidence pending.", reason: selfie ? undefined : "Biometric evidence pending" },
     { label: "GPS / tower", score: location, color: riskColor(location), detail: location >= 100 ? "GPS evidence captured." : location ? "Tower evidence captured; GPS preferred." : "GPS or tower evidence missing.", reason: location >= 100 ? undefined : "GPS evidence not complete" },
@@ -1770,6 +1776,9 @@ function downloadSponsorCsv(cases: WhatsAppKycCase[], batches: BulkBatch[], mode
     "riskScore",
     "decision",
     "proofStatus",
+    "homeAffairsStatus",
+    "homeAffairsProvider",
+    "homeAffairsCheckedAtUtc",
     "gpsCaptured",
     "towerId",
     "ipAddress",
@@ -1779,6 +1788,7 @@ function downloadSponsorCsv(cases: WhatsAppKycCase[], batches: BulkBatch[], mode
   ];
   const rows = cases.map((caseItem) => {
     const proofStatus = getProofStatus(caseItem);
+    const homeAffairs = caseItem.verification.identityDocument?.homeAffairsVerification;
     return [
       "single_rica_fica",
       caseItem.reference,
@@ -1790,6 +1800,9 @@ function downloadSponsorCsv(cases: WhatsAppKycCase[], batches: BulkBatch[], mode
       caseItem.risk?.score ?? "",
       caseItem.risk?.decision ?? "review",
       proofStatus.label,
+      homeAffairs ? `${homeAffairs.status}${homeAffairs.matched ? "_matched" : "_review"}` : "pending",
+      homeAffairs?.provider ?? "pending",
+      homeAffairs?.checkedAt ?? "",
       caseItem.verification.locationShared || caseItem.residenceEvidence?.gpsCoordinates ? "yes" : "no",
       caseItem.residenceEvidence?.towerId ?? caseItem.geoCapture?.towerId ?? caseItem.staffInitiation.bulkCampaign?.towerId ?? "",
       caseItem.deviceIntelligence?.ipAddress ?? "",

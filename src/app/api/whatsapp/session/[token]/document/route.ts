@@ -54,6 +54,7 @@ export async function POST(request: NextRequest, context: LocalRouteContext) {
 
   return NextResponse.json({
     case: updatedCase,
+    homeAffairs: updatedCase.verification.identityDocument?.homeAffairsVerification,
     ocr: {
       confidence: 0.93,
       documentType: body.documentType,
@@ -65,7 +66,7 @@ export async function POST(request: NextRequest, context: LocalRouteContext) {
         fullName: updatedCase.verification.identityDocument?.extractedFullName ?? updatedCase.applicant.fullName ?? "Pending",
         idNumber: updatedCase.verification.identityDocument?.extractedIdNumber ?? updatedCase.applicant.idNumber ?? "Pending",
         dateOfBirth: updatedCase.verification.idValidation?.dateOfBirth ?? "Pending",
-        dhaStatus: updatedCase.verification.idValidation?.isValid ? "ready_for_dha_match" : "needs_correction",
+        dhaStatus: updatedCase.verification.identityDocument?.homeAffairsVerification?.status ?? "needs_correction",
       },
     },
   });

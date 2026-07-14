@@ -19,6 +19,7 @@ import {
 import { hasSupabaseConfig, supabaseRequest } from "@/lib/supabase-rest";
 import { validateSouthAfricanIdNumber } from "@/lib/sa-id";
 import type { BulkCampaignResult, BulkCampaignRow } from "@/lib/bulk-campaign";
+import { verifyIdentityWithHomeAffairs } from "@/lib/home-affairs-provider";
 
 type StoreShape = {
   cases: Map<string, WhatsAppKycCase>;
@@ -672,6 +673,15 @@ export async function captureIdDocument(caseId: string, payload: { documentUrl: 
   const simulatedOcr = simulateIdentityDocumentOcr(current, payload);
   const extractedIdNumber = payload.extractedIdNumber ?? simulatedOcr.extractedIdNumber;
   const matchedEnteredId = extractedIdNumber ? String(extractedIdNumber) === String(current.applicant.idNumber ?? "") : undefined;
+  const homeAffairsVerification = await verifyIdentityWithHomeAffairs({
+    caseId,
+    reference: current.reference,
+    idNumber: current.applicant.idNumber,
+    fullName: current.applicant.fullName,
+    extractedIdNumber,
+    extractedFullName: simulatedOcr.extractedFullName,
+    documentType: payload.documentType,
+  });
   const nextCase = {
     ...current,
     status: current.status === "selfie_pending" ? "address_pending" : current.status,
@@ -684,6 +694,7 @@ export async function captureIdDocument(caseId: string, payload: { documentUrl: 
         extractedIdNumber,
         extractedFullName: simulatedOcr.extractedFullName,
         matchedEnteredId,
+        homeAffairsVerification,
       },
     },
     documentUrls: {
@@ -692,8 +703,7 @@ export async function captureIdDocument(caseId: string, payload: { documentUrl: 
     },
     updatedAt: new Date().toISOString(),
   };
-  return persistCase(
-    appendAudit(nextCase, {
+  const documentUploadedCase = appendAudit(nextCase, {
       actorRole: "system",
       actorId: "ocr-provider",
       action: "document_uploaded",
@@ -705,6 +715,23 @@ export async function captureIdDocument(caseId: string, payload: { documentUrl: 
         matchedEnteredId: nextCase.verification.identityDocument.matchedEnteredId ?? false,
         extractedFieldsStored: true,
         prototypeOcr: simulatedOcr.prototypeOcr,
+      },
+    });
+
+  return persistCase(
+    appendAudit(documentUploadedCase, {
+      actorRole: "system",
+      actorId: homeAffairsVerification.provider,
+      action: "home_affairs_verified",
+      details: {
+        provider: homeAffairsVerification.provider,
+        mode: homeAffairsVerification.mode,
+        status: homeAffairsVerification.status,
+        idStatus: homeAffairsVerification.idStatus,
+        matched: homeAffairsVerification.matched,
+        reference: homeAffairsVerification.reference,
+        checkedAt: homeAffairsVerification.checkedAt,
+        complianceNote: homeAffairsVerification.complianceNote,
       },
     })
   );

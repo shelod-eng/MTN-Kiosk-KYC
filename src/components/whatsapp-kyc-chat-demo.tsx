@@ -14,6 +14,7 @@ const staffHeaders = {
 type NetworkProvider = "MTN" | "Vodacom" | "Cell C";
 type IntakeMode = "single" | "bulk";
 type ChatStep = "seed" | "otp" | "fullName" | "idNumber" | "idDocument" | "address" | "selfie" | "verification" | "complete";
+type HomeAffairsResult = NonNullable<NonNullable<WhatsAppKycCase["verification"]["identityDocument"]>["homeAffairsVerification"]>;
 type Message = {
   id: string;
   sender: "platform" | "customer";
@@ -328,7 +329,7 @@ export function WhatsAppKycChatDemo() {
         }),
       });
       const payload = response.ok
-        ? ((await response.json()) as { case?: WhatsAppKycCase; ocr?: { confidence: number; fileName?: string }; error?: string })
+        ? ((await response.json()) as { case?: WhatsAppKycCase; ocr?: { confidence: number; fileName?: string }; homeAffairs?: HomeAffairsResult; error?: string })
         : { error: await readApiError(response) };
       if (!response.ok || !payload.case) {
         addMessage("platform", payload.error ?? "Could not process the ID document.");
@@ -336,9 +337,10 @@ export function WhatsAppKycChatDemo() {
       }
       applyCaseUpdate(payload.case);
       setStep("address");
+      const dha = payload.homeAffairs ?? payload.case.verification.identityDocument?.homeAffairsVerification;
       addMessage(
         "platform",
-        `ID OCR completed for ${payload.ocr?.fileName ?? file.name} at ${Math.round((payload.ocr?.confidence ?? 0.93) * 100)}%. Upload proof of address or type affidavit text next.`
+        `ID OCR completed for ${payload.ocr?.fileName ?? file.name} at ${Math.round((payload.ocr?.confidence ?? 0.93) * 100)}%. Home Affairs ID verification report ${dha?.status ?? "ready"} (${dha?.mode ?? "simulation"}): ${dha?.matched ? "matched" : "review"}; checked ${formatShortUtc(dha?.checkedAt)}. Upload proof of address or type affidavit text next.`
       );
     });
   }
@@ -862,6 +864,13 @@ function inferProofDocumentType(fileName: string) {
   if (normalized.includes("water") || normalized.includes("rates") || normalized.includes("municipal")) return "Water and rates account";
   if (normalized.includes("telkom") || normalized.includes("internet") || normalized.includes("isp")) return "Telkom or internet service provider invoice";
   return "Proof of address document";
+}
+
+function formatShortUtc(value?: string) {
+  if (!value) return "UTC pending";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "UTC pending";
+  return `${date.toISOString().slice(0, 16).replace("T", " ")} UTC`;
 }
 
 async function readApiError(response: Response) {

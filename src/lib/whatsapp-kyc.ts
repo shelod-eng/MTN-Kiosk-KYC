@@ -143,6 +143,25 @@ export type RiskAssessment = {
   layers: TrustLayerResult[];
 };
 
+export type HomeAffairsVerification = {
+  provider: "mock-dha-ready" | "verify-now" | "dha-direct";
+  mode: "simulation" | "live";
+  status: "verified" | "review" | "blocked" | "deceased" | "unavailable";
+  matched: boolean;
+  idStatus: "valid" | "invalid" | "blocked";
+  names?: string;
+  surname?: string;
+  dateOfBirth?: string;
+  gender?: string;
+  citizenship?: string;
+  deceased?: boolean;
+  smartId?: boolean;
+  photoAvailable?: boolean;
+  checkedAt: string;
+  reference: string;
+  complianceNote: string;
+};
+
 export type AuditLogEntry = {
   id: string;
   timestamp: string;
@@ -186,6 +205,7 @@ export type WhatsAppKycCase = {
       extractedFullName?: string;
       matchedEnteredId?: boolean; // match at upload time
       matchedEnteredIdFinal?: boolean; // final match after biometrics
+      homeAffairsVerification?: HomeAffairsVerification;
     };
     livenessScore?: number;
     faceMatchScore?: number;
@@ -441,6 +461,9 @@ export function calculateRiskAssessment(kycCase: WhatsAppKycCase): RiskAssessmen
   const idDocumentMatched =
     idDocument?.matchedEnteredIdFinal ?? idDocument?.matchedEnteredId ?? (idDocument?.extractedIdNumber ? false : undefined);
   const idDocumentMismatch = idDocumentMatched === false;
+  const homeAffairsVerification = idDocument?.homeAffairsVerification;
+  const homeAffairsMatched = homeAffairsVerification?.matched === true;
+  const homeAffairsNeedsReview = Boolean(homeAffairsVerification && !homeAffairsVerification.matched);
   
   // Check proof document acceptance and consistency
   const proofDocAccepted = kycCase.verification.proofOfAddressDocument?.accepted ?? false;
@@ -474,17 +497,19 @@ export function calculateRiskAssessment(kycCase: WhatsAppKycCase): RiskAssessmen
     weightedLayer("id_number", "SA ID validation", idValidation.isValid ? 100 : 20, 0.16, idValidation.isValid ? "pass" : "fail", idValidation.isValid ? "ID format and checksum passed." : idValidation.errors.join(" ")),
     weightedLayer(
       "id_document",
-      "Uploaded ID document match",
-      idDocumentCaptured ? (idDocumentMismatch ? 15 : idDocumentMatched ? 100 : 70) : 0,
+      "Uploaded ID + Home Affairs match",
+      idDocumentCaptured ? (idDocumentMismatch ? 15 : homeAffairsMatched ? 100 : idDocumentMatched ? 90 : homeAffairsNeedsReview ? 65 : 70) : 0,
       0.1,
-      !idDocumentCaptured ? "missing" : idDocumentMismatch ? "fail" : idDocumentMatched ? "pass" : "review",
+      !idDocumentCaptured ? "missing" : idDocumentMismatch ? "fail" : homeAffairsMatched || idDocumentMatched ? "pass" : "review",
       !idDocumentCaptured
         ? "ID, driver's licence, or passport upload is still required."
         : idDocumentMismatch
           ? `Uploaded document ID ${idDocument?.extractedIdNumber ?? "unknown"} does not match entered applicant ID.`
-          : idDocumentMatched
-            ? "Uploaded document ID matches the entered applicant ID."
-            : "Uploaded document ID could not be fully matched by the prototype OCR."
+          : homeAffairsMatched
+            ? `Home Affairs identity report matched via ${homeAffairsVerification.provider} (${homeAffairsVerification.mode}).`
+            : idDocumentMatched
+              ? "Uploaded document ID matches the entered applicant ID; Home Affairs provider can be activated when credentials are ready."
+              : "Uploaded document ID could not be fully matched by the prototype OCR or DHA-ready check."
     ),
     weightedLayer("otp", "OTP verification", otpVerified ? 100 : 25, 0.12, otpVerified ? "pass" : "review", otpVerified ? "OTP verified successfully." : "OTP verification is incomplete."),
     weightedLayer("liveness", "Liveness detection", Math.round(livenessScore * 100), 0.16, livenessScore >= 0.8 ? "pass" : livenessScore >= 0.65 ? "review" : "fail", `Liveness score ${livenessScore.toFixed(2)}.`),
@@ -533,6 +558,7 @@ export function calculateRiskAssessment(kycCase: WhatsAppKycCase): RiskAssessmen
   const baseScore = Math.min(100, Math.round(layers.reduce((sum, layer) => sum + layer.score * layer.weight, 0)));
   const reasonCodes = layers.filter((layer) => layer.status !== "pass").map((layer) => layer.key.toUpperCase());
   if (idDocumentMismatch) reasonCodes.push("ID_DOCUMENT_MISMATCH");
+  if (homeAffairsNeedsReview) reasonCodes.push("HOME_AFFAIRS_REVIEW");
   if (affidavitIdMismatch) reasonCodes.push("AFFIDAVIT_ID_MISMATCH");
   if (!idDocumentCaptured) reasonCodes.push("ID_DOCUMENT_MISSING");
   if (!hasAddressEvidence) reasonCodes.push("ADDRESS_EVIDENCE_MISSING");
